@@ -57,8 +57,35 @@ const formatToThaiDisplayDate = (dateObj: Date): string => {
   return `${day}/${month}/${yearBE}`;
 };
 
+// Helper: Extract Date from a string (e.g. Sheet Name) - The "Smart" Logic
+const extractDateFromText = (text: string): Date | null => {
+    // Matches DD/MM/YYYY or DD-MM-YYYY or DD.MM.YYYY
+    // Capture groups: 1=Day, 2=Month, 3=Year
+    const match = text.match(/(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{2,4})/);
+    if (!match) return null;
+
+    let day = parseInt(match[1], 10);
+    let month = parseInt(match[2], 10) - 1;
+    let year = parseInt(match[3], 10);
+
+    // Handle 2-digit years
+    if (year < 100) {
+        // Pivot at 40: >40 is 25xx (BE), <=40 is 20xx (AD)
+        // e.g. 68 -> 2568, 24 -> 2024
+        year = year > 40 ? 2500 + year : 2000 + year;
+    }
+
+    // Convert BE to AD
+    if (year > 2400) year -= 543;
+
+    const d = new Date(year, month, day);
+    // Validate date correctness
+    if (isNaN(d.getTime())) return null;
+    return d;
+};
+
 // Parse flexible Date Strings -> ISO Date
-// Supports: DD/MM/YYYY (BE or AD), YYYY-MM-DD
+// Supports: DD/MM/YYYY (BE or AD), YYYY-MM-DD, D/M/YY
 const parseFlexibleDate = (dateStr: string, timeStr: string = '00:00'): Date => {
   try {
     if (!dateStr) return new Date();
@@ -68,22 +95,47 @@ const parseFlexibleDate = (dateStr: string, timeStr: string = '00:00'): Date => 
     let month = 0;
     let day = 1;
 
-    // Case 1: Slash format DD/MM/YYYY or D/M/YYYY
+    // Case 1: Slash format DD/MM/YYYY or D/M/YYYY or D/M/YY
     if (cleanDate.includes('/')) {
         const parts = cleanDate.split('/');
         if (parts.length === 3) {
             day = parseInt(parts[0], 10);
             month = parseInt(parts[1], 10) - 1;
-            year = parseInt(parts[2], 10);
+            let yearPart = parseInt(parts[2], 10);
+            
+            // Handle 2 digit years
+            if (yearPart < 100) {
+                if (yearPart > 40) {
+                    year = 2500 + yearPart;
+                } else {
+                    year = 2000 + yearPart;
+                }
+            } else {
+                year = yearPart;
+            }
         }
     } 
-    // Case 2: Dash format YYYY-MM-DD
+    // Case 2: Dash format YYYY-MM-DD or DD-MM-YYYY
     else if (cleanDate.includes('-')) {
+        // Try standard Date parse first for YYYY-MM-DD
         const d = new Date(cleanDate);
         if (!isNaN(d.getTime())) {
             year = d.getFullYear();
             month = d.getMonth();
             day = d.getDate();
+        } else {
+            // Might be DD-MM-YYYY
+            const parts = cleanDate.split('-');
+            if(parts.length === 3) {
+                 day = parseInt(parts[0], 10);
+                 month = parseInt(parts[1], 10) - 1;
+                 let yearPart = parseInt(parts[2], 10);
+                 if (yearPart < 100) {
+                     year = yearPart > 40 ? 2500 + yearPart : 2000 + yearPart;
+                 } else {
+                     year = yearPart;
+                 }
+            }
         }
     }
 
@@ -131,11 +183,7 @@ const extractSheetInfo = (urlOrId: string) => {
   }
 
   // Standard Link extraction
-  // Format: https://docs.google.com/spreadsheets/d/SPREADSHEET_ID/edit...
-  // Use {15,} to ensure we match a long ID and not a short path segment (like 'e' or 'u')
   const idMatch = cleanUrl.match(/\/d\/([a-zA-Z0-9-_]{15,})/);
-  
-  // If no regex match, check if the input itself looks like an ID (no slashes, long enough)
   const sheetId = idMatch 
     ? idMatch[1] 
     : (!cleanUrl.includes('/') && cleanUrl.length > 15 ? cleanUrl : null);
@@ -143,8 +191,6 @@ const extractSheetInfo = (urlOrId: string) => {
   return { sheetId, gid, isPublished: false, cleanUrl };
 };
 
-// Added sourceIndex to generate unique IDs across multiple sheets
-// Added sheetName to identify the source
 export const fetchSheetData = async (
   urlOrId: string = DEFAULT_SHEET_ID, 
   sourceIndex: number = 0,
@@ -155,35 +201,26 @@ export const fetchSheetData = async (
   let url = '';
 
   if (isPublished) {
-     // Handle Published Links (e.g. /d/e/.../pubhtml)
      url = cleanUrl;
-     // If it's a pubhtml link, change to pub?output=csv
      if (url.includes('/pubhtml')) {
         url = url.replace(/\/pubhtml.*/, '/pub?output=csv');
      } else if (url.includes('/pub')) {
-        // Ensure output=csv exists
         if (!url.includes('output=csv')) {
             url += (url.includes('?') ? '&' : '?') + 'output=csv';
         }
      } else {
-        // Fallback for raw /d/e/ links without extension
          if (!url.includes('output=csv')) {
             url += (url.includes('?') ? '&' : '?') + 'output=csv';
          }
      }
-     
-     // Append GID if found and not present
      if (gid && !url.includes(`gid=${gid}`)) {
          url += `&gid=${gid}`;
      }
-
   } else {
-      // Standard Links
       if (!sheetId) {
         console.warn(`Skipping invalid sheet URL at index ${sourceIndex}: ${urlOrId}`);
         return [];
       }
-
       url = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv`;
       if (gid) {
         url += `&gid=${gid}`;
@@ -197,7 +234,6 @@ export const fetchSheetData = async (
     });
 
     if (!response.ok) {
-        // Provide more detailed error info
         throw new Error(`Status ${response.status} (${response.statusText})`);
     }
     
@@ -208,22 +244,50 @@ export const fetchSheetData = async (
 
     const headers = rows[0].map(h => h.toLowerCase().trim());
     
-    // Column Index Mapping
-    let amtIdx = headers.findIndex(h => h.includes('amount') || h.includes('จำนวน'));
-    let dateIdx = headers.findIndex(h => h.includes('date') || h.includes('วันที่'));
+    // 1. Try to find columns by Keywords
+    let amtIdx = headers.findIndex(h => h.match(/amount|จำนวน|ราคา|ยอด|price|cost|expense|จ่าย/i));
+    let dateIdx = headers.findIndex(h => h.match(/date|วันที่|ว\.ด\.ป|วัน|time|timestamp|เวลา/i));
     let timeIdx = headers.findIndex(h => h.includes('time') || h.includes('เวลา'));
-    let noteIdx = headers.findIndex(h => h.includes('note') || h.includes('บันทึก'));
-    let receiverIdx = headers.findIndex(h => h.includes('receiver') || h.includes('ผู้รับ'));
+    let noteIdx = headers.findIndex(h => h.includes('note') || h.includes('บันทึก') || h.includes('รายการ') || h.includes('description'));
+    let receiverIdx = headers.findIndex(h => h.includes('receiver') || h.includes('ผู้รับ') || h.includes('category') || h.includes('หมวด'));
 
-    // Fallbacks
+    // 2. Smart Sniffing: If headers fail, check the first row of data
+    if ((dateIdx === -1 || amtIdx === -1) && rows.length > 1) {
+        const firstDataRow = rows[1];
+        // Regex for Date: matches DD/MM/YYYY or YYYY-MM-DD
+        const datePattern = /^(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})|(\d{4}[/-]\d{1,2}[/-]\d{1,2})/;
+        // Regex for Amount: matches numbers with commas or dots
+        const numPattern = /^["']?[\d,.]+["']?$/;
+
+        firstDataRow.forEach((cell, idx) => {
+            const val = cell.trim();
+            // Don't overwrite if we already found it by header
+            if (dateIdx === -1 && datePattern.test(val)) {
+                // Ensure it's not a pure number (which might be amount) unless amount is also -1
+                if (val.includes('/') || val.includes('-')) {
+                    dateIdx = idx;
+                }
+            }
+            if (amtIdx === -1 && numPattern.test(val) && val.length > 0) {
+                 amtIdx = idx;
+            }
+        });
+    }
+
+    // 3. Fallbacks (Last resort)
     if (amtIdx === -1) amtIdx = 3; 
     if (dateIdx === -1) dateIdx = 4;
+    // Optional fields defaults
     if (timeIdx === -1) timeIdx = 5;
     if (noteIdx === -1) noteIdx = 6; 
     if (receiverIdx === -1) receiverIdx = 2;
 
     const transactions: Transaction[] = [];
     const startRow = 1;
+
+    // 🔥 SMART OVERRIDE: ตรวจสอบว่าชื่อชีท (sheetName) เป็นวันที่หรือไม่
+    // ถ้าใช่ (เช่น "25/12/2568") ให้ใช้วันที่นี้เป็นหลัก แทนข้อมูลในตารางที่อาจจะผิด
+    const sheetDateOverride = extractDateFromText(sheetName);
 
     for (let i = startRow; i < rows.length; i++) {
       const row = rows[i];
@@ -240,7 +304,16 @@ export const fetchSheetData = async (
       // Validation
       if (!dateStr && amount === 0) continue;
 
-      const dateObj = parseFlexibleDate(dateStr, timeStr);
+      let dateObj: Date;
+
+      if (sheetDateOverride) {
+          // ✅ CASE 1: ชื่อไฟล์เป็นวันที่ -> ใช้วันที่จากชื่อไฟล์ (ถูกต้องแน่นอนตามที่คุณต้องการ)
+          dateObj = new Date(sheetDateOverride);
+      } else {
+          // ❌ CASE 2: ชื่อไฟล์ไม่มีวันที่ -> ใช้วันที่จากในตาราง (Parse ปกติ)
+          dateObj = parseFlexibleDate(dateStr, timeStr);
+      }
+
       const displayDate = formatToThaiDisplayDate(dateObj);
 
       // Description & Category Logic
@@ -251,12 +324,16 @@ export const fetchSheetData = async (
       if (!description) description = "ไม่ระบุรายละเอียด";
 
       let category = noteStr || 'อื่นๆ (Others)';
+      // If receiver looks like a category (short text), use it as category
+      if (receiverStr && receiverStr.length < 30) {
+          category = receiverStr;
+          if (noteStr) description = noteStr;
+      }
 
-      // Generate ID using sourceIndex to avoid collisions between sheets
       transactions.push({
         id: `sheet-${sourceIndex}-row-${i}`,
-        date: dateObj.toISOString(),
-        displayDate: displayDate, 
+        date: dateObj.toISOString(), // ใช้สำหรับคำนวณกราฟ (Sort/Group)
+        displayDate: displayDate,     // ใช้สำหรับแสดงผล
         category: category, 
         amount: amount,
         description: description,
@@ -269,7 +346,6 @@ export const fetchSheetData = async (
 
   } catch (error) {
     console.error(`Error fetching sheet index ${sourceIndex}:`, error);
-    // Return empty array instead of throwing, so other sheets can still load
     return [];
   }
 };
