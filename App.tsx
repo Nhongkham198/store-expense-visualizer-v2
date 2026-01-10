@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, 
-  PieChart, Pie, Cell
+  PieChart, Pie, Cell, Rectangle
 } from 'recharts';
 import { 
   LayoutDashboard, List, FileSpreadsheet, Wallet, TrendingUp, AlertCircle, 
@@ -38,6 +38,7 @@ const App: React.FC = () => {
   // Filter State (Interactive Charts)
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [selectedSheetIndex, setSelectedSheetIndex] = useState<number | null>(null);
+  const [selectedDateKey, setSelectedDateKey] = useState<string | null>(null); // NEW: Time Filter
   const [sheetSearchTerm, setSheetSearchTerm] = useState<string>('');
   
   // Chart View State
@@ -304,6 +305,12 @@ const App: React.FC = () => {
 
   // --- Computations ---
 
+  const getDateKey = (date: Date, view: 'daily' | 'monthly' | 'yearly') => {
+      if (view === 'daily') return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+      if (view === 'monthly') return `${date.getFullYear()}-${date.getMonth()}`;
+      return `${date.getFullYear()}`;
+  };
+
   // Date Parsing helper for Sorting
   const parseDateFromSheetName = (name: string): number => {
       // Look for patterns like DD/MM/YYYY, DD-MM-YYYY
@@ -342,8 +349,9 @@ const App: React.FC = () => {
   }, [sheets, sortMode]);
 
 
-  // 1. Filter Transactions based on selected sheet
-  const filteredTransactions = useMemo(() => {
+  // 1. Base Filtered Transactions (Filtered by Sheet ONLY)
+  // This is used as the "Universe" for the charts before they apply their specific filters
+  const sheetFilteredTransactions = useMemo(() => {
     let tx = transactions;
     if (selectedSheetIndex !== null) {
       tx = tx.filter(t => t.sheetSourceIndex === selectedSheetIndex);
@@ -351,14 +359,51 @@ const App: React.FC = () => {
     return tx;
   }, [transactions, selectedSheetIndex]);
 
-  // 2. Compute Sheet Summaries for Cards
+  // 2. Transactions Filtered by Time (For Pie Chart)
+  // Pie Chart needs to know "What is the category breakdown for THIS selected month?"
+  const timeFilteredTransactions = useMemo(() => {
+      if (!selectedDateKey) return sheetFilteredTransactions;
+
+      return sheetFilteredTransactions.filter(t => {
+          const dateObj = new Date(t.date);
+          if (isNaN(dateObj.getTime())) return false;
+          const key = getDateKey(dateObj, trendView);
+          return key === selectedDateKey;
+      });
+  }, [sheetFilteredTransactions, selectedDateKey, trendView]);
+
+  // 3. Fully Filtered Transactions (For List & Stats)
+  // This is the most specific data: Selected Sheet + Selected Time + Selected Category
+  const fullyFilteredTransactions = useMemo(() => {
+      let tx = timeFilteredTransactions;
+      if (selectedCategory) {
+          tx = tx.filter(t => (t.category || 'อื่นๆ') === selectedCategory);
+      }
+      return tx;
+  }, [timeFilteredTransactions, selectedCategory]);
+
+  // --- Derived Data for UI ---
+
+  // Sheet Summaries (Sidebar/Cards)
   const sheetSummaries = useMemo(() => {
     return sheets.map((sheet, index) => {
+       // Start with ALL transactions for this sheet
        const sheetTx = transactions.filter(t => t.sheetSourceIndex === index);
        
-       const matchingTx = selectedCategory 
-          ? sheetTx.filter(t => (t.category || 'อื่นๆ') === selectedCategory)
-          : sheetTx;
+       // Filter based on currently active global filters (Category & Time)
+       const matchingTx = sheetTx.filter(t => {
+           let match = true;
+           if (selectedCategory) match = match && (t.category || 'อื่นๆ') === selectedCategory;
+           if (selectedDateKey) {
+               const d = new Date(t.date);
+               if (!isNaN(d.getTime())) {
+                   match = match && getDateKey(d, trendView) === selectedDateKey;
+               } else {
+                   match = false;
+               }
+           }
+           return match;
+       });
 
        const total = matchingTx.reduce((sum, t) => sum + t.amount, 0);
        
@@ -370,21 +415,17 @@ const App: React.FC = () => {
          hasMatch: matchingTx.length > 0 
        };
     });
-  }, [sheets, transactions, selectedCategory]);
+  }, [sheets, transactions, selectedCategory, selectedDateKey, trendView]);
 
-  // Overall Total
+  // Overall Total (Displayed in Blue Card)
   const totalExpense = useMemo(() => {
-     let tx = filteredTransactions;
-     if (selectedCategory) {
-        tx = tx.filter(t => (t.category || 'อื่นๆ') === selectedCategory);
-     }
-     return tx.reduce((acc, curr) => acc + curr.amount, 0);
-  }, [filteredTransactions, selectedCategory]);
+     return fullyFilteredTransactions.reduce((acc, curr) => acc + curr.amount, 0);
+  }, [fullyFilteredTransactions]);
 
-  // Category Data for Pie Chart
+  // Category Data for Pie Chart (Source: TimeFiltered)
   const categoryData = useMemo(() => {
     const summary: Record<string, number> = {};
-    filteredTransactions.forEach(t => {
+    timeFilteredTransactions.forEach(t => {
       const cat = t.category || 'อื่นๆ';
       summary[cat] = (summary[cat] || 0) + t.amount;
     });
@@ -392,15 +433,18 @@ const App: React.FC = () => {
       name: key,
       value: summary[key]
     })).sort((a, b) => b.value - a.value);
-  }, [filteredTransactions]);
+  }, [timeFilteredTransactions]);
 
-  // Trend Data (Daily / Monthly / Yearly)
+  // Trend Data for Bar Chart (Source: SheetFiltered + Category Filter)
+  // We DO NOT filter by Date here, because we want to see ALL bars to click on them.
   const trendData = useMemo(() => {
+    // If a category is selected, we only show trend for that category.
     const sourceTransactions = selectedCategory 
-        ? filteredTransactions.filter(t => (t.category || 'อื่นๆ') === selectedCategory)
-        : filteredTransactions;
+        ? sheetFilteredTransactions.filter(t => (t.category || 'อื่นๆ') === selectedCategory)
+        : sheetFilteredTransactions;
 
-    const summary = new Map<string, { date: string, amount: number, sortKey: number }>();
+    // Map key -> { date, amount, sortKey, rawKey }
+    const summary = new Map<string, { date: string, amount: number, sortKey: number, rawKey: string }>();
     const thaiMonths = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
 
     sourceTransactions.forEach(t => {
@@ -416,6 +460,7 @@ const App: React.FC = () => {
          const day = dateObj.getDate().toString().padStart(2, '0');
          const month = (dateObj.getMonth() + 1).toString().padStart(2, '0');
          const yearBE = (dateObj.getFullYear() + 543).toString().slice(-2);
+         // Key matches logic in getDateKey
          key = `${dateObj.getFullYear()}-${dateObj.getMonth()}-${dateObj.getDate()}`;
          displayLabel = `${day}/${month}/${yearBE}`;
          sortKey = dateObj.getTime();
@@ -436,7 +481,7 @@ const App: React.FC = () => {
       }
 
       if (!summary.has(key)) {
-         summary.set(key, { date: displayLabel, amount: 0, sortKey });
+         summary.set(key, { date: displayLabel, amount: 0, sortKey, rawKey: key });
       }
       summary.get(key)!.amount += t.amount;
     });
@@ -445,9 +490,21 @@ const App: React.FC = () => {
     return Array.from(summary.values())
         .sort((a, b) => a.sortKey - b.sortKey);
 
-  }, [filteredTransactions, selectedCategory, trendView]);
+  }, [sheetFilteredTransactions, selectedCategory, trendView]);
 
   const topCategory = categoryData.length > 0 ? categoryData[0] : { name: '-', value: 0 };
+
+  const handleTrendViewChange = (view: 'daily' | 'monthly' | 'yearly') => {
+      setTrendView(view);
+      setSelectedDateKey(null); // Reset date filter when changing view
+  };
+
+  const handleResetFilters = () => {
+      setSelectedSheetIndex(null); 
+      setSelectedCategory(null); 
+      setSelectedDateKey(null);
+      setSheetSearchTerm('');
+  };
 
   // --- Render Helpers ---
 
@@ -475,7 +532,13 @@ const App: React.FC = () => {
                 {selectedCategory && (
                     <span className="text-xs bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full flex items-center gap-1 animate-fade-in">
                         <Filter size={10} />
-                        กรอง: {selectedCategory}
+                        หมวด: {selectedCategory}
+                    </span>
+                )}
+                {selectedDateKey && (
+                    <span className="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded-full flex items-center gap-1 animate-fade-in">
+                        <Calendar size={10} />
+                        ช่วงเวลาที่เลือก
                     </span>
                 )}
              </div>
@@ -493,9 +556,9 @@ const App: React.FC = () => {
                     />
                  </div>
 
-                {(selectedSheetIndex !== null || selectedCategory !== null || sheetSearchTerm !== '') && (
+                {(selectedSheetIndex !== null || selectedCategory !== null || selectedDateKey !== null || sheetSearchTerm !== '') && (
                 <button 
-                    onClick={() => { setSelectedSheetIndex(null); setSelectedCategory(null); setSheetSearchTerm(''); }}
+                    onClick={handleResetFilters}
                     className="text-xs text-red-500 hover:underline font-medium whitespace-nowrap"
                 >
                     รีเซ็ต (Reset)
@@ -521,10 +584,10 @@ const App: React.FC = () => {
                 </div>
                 <div className="mt-3">
                     <p className={`text-sm font-medium ${selectedSheetIndex === null ? 'text-blue-100' : 'text-gray-500'}`}>
-                        {selectedCategory ? `รวม "${selectedCategory}"` : 'ภาพรวมทั้งหมด (All)'}
+                        {(selectedCategory || selectedDateKey) ? `รวมที่เลือก` : 'ภาพรวมทั้งหมด (All)'}
                     </p>
                     <h4 className={`text-lg font-bold ${selectedSheetIndex === null ? 'text-white' : 'text-gray-800'}`}>
-                        {selectedCategory ? `฿${sheetSummaries.reduce((a,b)=>a+b.total, 0).toLocaleString()}` : `${sheets.length} แผ่นงาน`}
+                        {selectedCategory || selectedDateKey ? `฿${sheetSummaries.reduce((a,b)=>a+b.total, 0).toLocaleString()}` : `${sheets.length} แผ่นงาน`}
                     </h4>
                 </div>
             </div>
@@ -534,7 +597,7 @@ const App: React.FC = () => {
                     if (sheetSearchTerm.trim()) {
                         return sheet.name.toLowerCase().includes(sheetSearchTerm.toLowerCase());
                     }
-                    if (selectedCategory) {
+                    if (selectedCategory || selectedDateKey) {
                         return sheet.hasMatch;
                     }
                     return false;
@@ -576,7 +639,7 @@ const App: React.FC = () => {
                                 ฿{sheet.total.toLocaleString()}
                             </h4>
                             <div className={`text-xs mt-1 ${selectedSheetIndex === sheet.index ? 'text-emerald-200' : 'text-gray-400'}`}>
-                                {selectedCategory 
+                                {selectedCategory || selectedDateKey
                                    ? `พบ ${sheet.count} รายการ`
                                    : `${sheet.count} รายการ`
                                 }
@@ -586,10 +649,10 @@ const App: React.FC = () => {
                 ))
             }
 
-            {!selectedCategory && !sheetSearchTerm && (
+            {!selectedCategory && !selectedDateKey && !sheetSearchTerm && (
                 <div className="hidden sm:flex col-span-1 lg:col-span-3 items-center justify-center p-4 border-2 border-dashed border-gray-200 rounded-xl text-gray-400 text-sm bg-gray-50/50">
                     <div className="text-center">
-                        <p>👆 เลือกหมวดหมู่จากกราฟ หรือพิมพ์ค้นหาเพื่อดูไฟล์ที่เกี่ยวข้อง</p>
+                        <p>👆 เลือกหมวดหมู่หรือช่วงเวลาจากกราฟ เพื่อกรองข้อมูล</p>
                     </div>
                 </div>
             )}
@@ -598,25 +661,30 @@ const App: React.FC = () => {
 
       <div className="flex items-center gap-2 mt-2 pb-2 border-b border-gray-100">
           <span className="text-lg font-bold text-gray-800 flex items-center gap-2">
-             {selectedCategory && <Filter size={20} className="text-indigo-500" />}
+             {(selectedCategory || selectedDateKey) && <Filter size={20} className="text-indigo-500" />}
              {selectedSheetIndex !== null 
                 ? `วิเคราะห์: ${sheets[selectedSheetIndex]?.name || 'Sheet'}`
                 : 'วิเคราะห์ภาพรวม (Overall Analysis)'}
-             {selectedCategory && (
-                <span className="text-gray-400 text-base font-normal">
-                    — หมวด: <span className="text-indigo-600 font-medium">{selectedCategory}</span>
-                </span>
-             )}
+             <div className="flex flex-wrap gap-2 items-center ml-2">
+                {selectedCategory && (
+                    <span className="text-sm bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-md border border-indigo-100">
+                        หมวด: <b>{selectedCategory}</b>
+                    </span>
+                )}
+                {selectedDateKey && (
+                    <span className="text-sm bg-orange-50 text-orange-700 px-2 py-0.5 rounded-md border border-orange-100">
+                        ช่วงเวลา: <b>{trendData.find(d => d.rawKey === selectedDateKey)?.date || 'Selected'}</b>
+                    </span>
+                )}
+             </div>
           </span>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         <StatsCard 
-          title={selectedCategory ? `ยอดรวม "${selectedCategory}"` : "ยอดรวมค่าใช้จ่าย (Total)"}
+          title="ยอดรวม (Total Expense)"
           value={`฿${totalExpense.toLocaleString()}`} 
-          subValue={selectedCategory 
-            ? `จาก ${filteredTransactions.filter(t => (t.category||'อื่นๆ') === selectedCategory).length} รายการ` 
-            : `จาก ${filteredTransactions.length} รายการ`}
+          subValue={`จาก ${fullyFilteredTransactions.length} รายการ`}
           icon={<Wallet size={24} />}
           colorClass="bg-blue-500"
         />
@@ -630,11 +698,9 @@ const App: React.FC = () => {
         <StatsCard 
           title="เฉลี่ยต่อบิล (Avg/Bill)" 
           value={`฿${
-              selectedCategory
-              ? (filteredTransactions.filter(t => (t.category||'อื่นๆ')===selectedCategory).length > 0
-                    ? Math.round(totalExpense / filteredTransactions.filter(t => (t.category||'อื่นๆ')===selectedCategory).length).toLocaleString()
-                    : 0)
-              : (filteredTransactions.length > 0 ? Math.round(totalExpense / filteredTransactions.length).toLocaleString() : 0)
+               fullyFilteredTransactions.length > 0 
+                  ? Math.round(totalExpense / fullyFilteredTransactions.length).toLocaleString()
+                  : 0
           }`}
           subValue="บาทต่อครั้ง"
           icon={<FileSpreadsheet size={24} />}
@@ -652,28 +718,28 @@ const App: React.FC = () => {
                    {trendView === 'monthly' && 'แนวโน้มรายเดือน (Monthly Trend)'}
                    {trendView === 'yearly' && 'แนวโน้มรายปี (Yearly Trend)'}
                 </h3>
-                {selectedCategory && (
-                    <span className="text-xs text-blue-600 bg-blue-50 px-2 py-0.5 rounded-md self-start mt-1">
-                    — {selectedCategory}
-                    </span>
-                )}
+                <p className="text-xs text-gray-400 font-light">
+                   {selectedDateKey 
+                     ? 'คลิกแท่งเดิมเพื่อยกเลิกการกรอง' 
+                     : 'คลิกที่แท่งกราฟเพื่อดูรายละเอียดเฉพาะช่วงเวลานั้น'}
+                </p>
              </div>
 
              <div className="flex bg-gray-100 p-1 rounded-lg">
                 <button 
-                  onClick={() => setTrendView('daily')}
+                  onClick={() => handleTrendViewChange('daily')}
                   className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${trendView === 'daily' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
                 >
                   วัน
                 </button>
                 <button 
-                  onClick={() => setTrendView('monthly')}
+                  onClick={() => handleTrendViewChange('monthly')}
                   className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${trendView === 'monthly' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
                 >
                   เดือน
                 </button>
                 <button 
-                  onClick={() => setTrendView('yearly')}
+                  onClick={() => handleTrendViewChange('yearly')}
                   className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${trendView === 'yearly' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
                 >
                   ปี
@@ -683,15 +749,38 @@ const App: React.FC = () => {
           <div className="h-72">
             {trendData.length > 0 ? (
               <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={trendData}>
+                <BarChart 
+                    data={trendData}
+                    margin={{ top: 10, right: 10, left: -20, bottom: 0 }}
+                >
                   <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E5E7EB" />
                   <XAxis dataKey="date" stroke="#9CA3AF" tick={{fontSize: 10}} />
                   <YAxis stroke="#9CA3AF" tick={{fontSize: 12}} tickFormatter={(value) => `฿${value >= 1000 ? (value/1000).toFixed(0) + 'k' : value}`} />
                   <RechartsTooltip 
+                    cursor={{fill: 'transparent'}}
                     formatter={(value: number) => [`฿${value.toLocaleString()}`, 'Amount']}
                     contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)' }}
                   />
-                  <Bar dataKey="amount" fill="#3B82F6" radius={[4, 4, 0, 0]} barSize={trendView === 'yearly' ? 60 : 40} />
+                  <Bar 
+                      dataKey="amount" 
+                      radius={[4, 4, 0, 0]} 
+                      barSize={trendView === 'yearly' ? 60 : 40}
+                      onClick={(data) => {
+                          // Ensure we use the raw data from the payload
+                          if (data && data.rawKey) {
+                             setSelectedDateKey(prev => prev === data.rawKey ? null : data.rawKey);
+                          }
+                      }}
+                      cursor="pointer"
+                  >
+                    {trendData.map((entry, index) => (
+                        <Cell 
+                            key={`cell-${index}`} 
+                            fill={entry.rawKey === selectedDateKey ? '#F97316' : '#3B82F6'} 
+                            fillOpacity={selectedDateKey && entry.rawKey !== selectedDateKey ? 0.3 : 1}
+                        />
+                    ))}
+                  </Bar>
                 </BarChart>
               </ResponsiveContainer>
             ) : (
@@ -704,12 +793,17 @@ const App: React.FC = () => {
 
         <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
           <h3 className="text-lg font-semibold text-gray-800 mb-4">สัดส่วนค่าใช้จ่าย (By Category)</h3>
-          <p className="text-xs text-gray-400 mb-2 -mt-2">💡 คลิกที่กราฟ หรือ <strong>รายการด้านขวา</strong> เพื่อกรองข้อมูล</p>
+          <p className="text-xs text-gray-400 mb-2 -mt-2">
+             💡 {selectedDateKey 
+                  ? `แสดงสัดส่วนของช่วงเวลา: ${trendData.find(d => d.rawKey === selectedDateKey)?.date || 'Selected'}` 
+                  : 'แสดงภาพรวมทั้งหมด (คลิกรายการด้านขวาเพื่อกรอง)'}
+          </p>
           
           {/* UPDATED: Flex layout with custom scrollable legend */}
           <div className="h-96 sm:h-72 flex flex-col sm:flex-row gap-4 items-center">
              {/* Chart Area */}
              <div className="flex-1 w-full h-full min-h-0">
+                {categoryData.length > 0 ? (
                 <ResponsiveContainer width="100%" height="100%">
                   <PieChart>
                     <Pie
@@ -741,6 +835,12 @@ const App: React.FC = () => {
                     {/* Removed default Legend */}
                   </PieChart>
                 </ResponsiveContainer>
+                ) : (
+                    <div className="h-full flex flex-col items-center justify-center text-gray-400 text-sm">
+                        <AlertCircle size={24} className="mb-2 opacity-50" />
+                        ไม่มีข้อมูลในช่วงเวลานี้
+                    </div>
+                )}
              </div>
 
              {/* Custom Scrollable Legend */}
@@ -773,6 +873,9 @@ const App: React.FC = () => {
                             title={entry.name}
                         >
                             {entry.name}
+                        </span>
+                        <span className="text-gray-400 ml-auto text-[10px]">
+                            {((entry.value / totalExpense) * 100).toFixed(0)}%
                         </span>
                     </div>
                 ))}
@@ -1169,7 +1272,7 @@ const App: React.FC = () => {
             {activeTab === ViewMode.DASHBOARD && renderDashboard()}
             
             {activeTab === ViewMode.TRANSACTIONS && (
-              <TransactionsTable transactions={filteredTransactions} sheets={sheets} />
+              <TransactionsTable transactions={fullyFilteredTransactions} sheets={sheets} />
             )}
 
             {activeTab === ViewMode.IMPORT && (

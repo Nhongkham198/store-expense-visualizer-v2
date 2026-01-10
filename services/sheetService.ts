@@ -248,6 +248,7 @@ export const fetchSheetData = async (
     let amtIdx = headers.findIndex(h => h.match(/amount|จำนวน|ราคา|ยอด|price|cost|expense|จ่าย/i));
     let dateIdx = headers.findIndex(h => h.match(/date|วันที่|ว\.ด\.ป|วัน|time|timestamp|เวลา/i));
     let timeIdx = headers.findIndex(h => h.includes('time') || h.includes('เวลา'));
+    // Prioritize "Note" or "Notes" for the category column as requested
     let noteIdx = headers.findIndex(h => h.includes('note') || h.includes('บันทึก') || h.includes('รายการ') || h.includes('description'));
     let receiverIdx = headers.findIndex(h => h.includes('receiver') || h.includes('ผู้รับ') || h.includes('category') || h.includes('หมวด'));
 
@@ -275,18 +276,18 @@ export const fetchSheetData = async (
     }
 
     // 3. Fallbacks (Last resort)
+    // Based on the user's screenshot: 
+    // A=0, B=1, C=2(Receiver), D=3(Amount), E=4, F=5, G=6(Notes)
     if (amtIdx === -1) amtIdx = 3; 
-    if (dateIdx === -1) dateIdx = 4;
-    // Optional fields defaults
+    if (dateIdx === -1) dateIdx = 0; // Timestamp is usually col A
     if (timeIdx === -1) timeIdx = 5;
-    if (noteIdx === -1) noteIdx = 6; 
-    if (receiverIdx === -1) receiverIdx = 2;
+    if (noteIdx === -1) noteIdx = 6; // Column G is index 6
+    if (receiverIdx === -1) receiverIdx = 2; // Column C is index 2
 
     const transactions: Transaction[] = [];
     const startRow = 1;
 
     // 🔥 SMART OVERRIDE: ตรวจสอบว่าชื่อชีท (sheetName) เป็นวันที่หรือไม่
-    // ถ้าใช่ (เช่น "25/12/2568") ให้ใช้วันที่นี้เป็นหลัก แทนข้อมูลในตารางที่อาจจะผิด
     const sheetDateOverride = extractDateFromText(sheetName);
 
     for (let i = startRow; i < rows.length; i++) {
@@ -295,8 +296,8 @@ export const fetchSheetData = async (
 
       const dateStr = row[dateIdx] || '';
       const timeStr = row[timeIdx] || '';
-      const noteStr = row[noteIdx] || '';
-      const receiverStr = row[receiverIdx] || '';
+      const noteStr = row[noteIdx] || '';     // Column G (Notes)
+      const receiverStr = row[receiverIdx] || ''; // Column C (Receiver)
       const amtStr = row[amtIdx] || '0';
 
       const amount = cleanAmount(amtStr);
@@ -307,33 +308,35 @@ export const fetchSheetData = async (
       let dateObj: Date;
 
       if (sheetDateOverride) {
-          // ✅ CASE 1: ชื่อไฟล์เป็นวันที่ -> ใช้วันที่จากชื่อไฟล์ (ถูกต้องแน่นอนตามที่คุณต้องการ)
           dateObj = new Date(sheetDateOverride);
       } else {
-          // ❌ CASE 2: ชื่อไฟล์ไม่มีวันที่ -> ใช้วันที่จากในตาราง (Parse ปกติ)
           dateObj = parseFlexibleDate(dateStr, timeStr);
       }
 
       const displayDate = formatToThaiDisplayDate(dateObj);
 
-      // Description & Category Logic
-      let description = receiverStr;
-      if (noteStr) {
-          description = description ? `${receiverStr} - ${noteStr}` : noteStr;
-      }
-      if (!description) description = "ไม่ระบุรายละเอียด";
+      // --- LOGIC UPDATED FOR PIE CHART ---
+      // User Request: Use Column G (Notes) as the Category.
+      
+      let category = 'อื่นๆ (Others)';
+      let description = 'ไม่ระบุรายละเอียด';
 
-      let category = noteStr || 'อื่นๆ (Others)';
-      // If receiver looks like a category (short text), use it as category
-      if (receiverStr && receiverStr.length < 30) {
-          category = receiverStr;
-          if (noteStr) description = noteStr;
+      // 1. Prioritize Note (Col G) for Category
+      if (noteStr && noteStr.trim().length > 0) {
+          category = noteStr.trim();
+          // Description = Receiver + Note to give full context
+          description = receiverStr ? `${receiverStr} - ${noteStr}` : noteStr;
+      } 
+      // 2. Fallback to Receiver (Col C) if Note is empty
+      else if (receiverStr) {
+          category = receiverStr.trim();
+          description = receiverStr;
       }
 
       transactions.push({
         id: `sheet-${sourceIndex}-row-${i}`,
-        date: dateObj.toISOString(), // ใช้สำหรับคำนวณกราฟ (Sort/Group)
-        displayDate: displayDate,     // ใช้สำหรับแสดงผล
+        date: dateObj.toISOString(),
+        displayDate: displayDate,
         category: category, 
         amount: amount,
         description: description,
