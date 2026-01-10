@@ -56,6 +56,7 @@ const initFirebase = () => {
 
 // Key ที่ใช้เก็บข้อมูล
 const DB_KEY = 'store_viz_settings/sheet_urls';
+const LOGO_DB_KEY = 'store_viz_settings/logo_url';
 
 // Returns any because it might be string[] (old format) or SheetConfig[] (new format)
 export const getSheetUrlsFromFirebase = async (): Promise<any | null> => {
@@ -95,5 +96,42 @@ export const saveSheetUrlsToFirebase = async (data: SheetConfig[]): Promise<void
     console.log("Saved to Firebase successfully");
   } catch (error) {
     console.error("Error saving to Firebase. Check databaseURL or Security Rules.", error);
+  }
+};
+
+// --- NEW: Logo Sync Functions ---
+
+export const getLogoUrlFromFirebase = async (): Promise<string | null> => {
+  if (!app || !db) {
+      const success = initFirebase();
+      if (!success) return null;
+  }
+  if (!db) return null;
+
+  try {
+    const dbRef = ref(db);
+    const snapshot = await get(child(dbRef, LOGO_DB_KEY));
+    if (snapshot.exists()) {
+      return snapshot.val();
+    } else {
+      return null;
+    }
+  } catch (error) {
+    console.error("Error getting logo from Firebase", error);
+    return null;
+  }
+};
+
+export const saveLogoUrlToFirebase = async (url: string): Promise<void> => {
+  if (!app || !db) {
+      const success = initFirebase();
+      if (!success) return;
+  }
+  if (!db) return;
+
+  try {
+    await set(ref(db, LOGO_DB_KEY), url);
+  } catch (error) {
+    console.error("Error saving logo to Firebase", error);
   }
 };

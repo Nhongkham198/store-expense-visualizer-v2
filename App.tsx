@@ -7,12 +7,18 @@ import {
   LayoutDashboard, List, FileSpreadsheet, Wallet, TrendingUp, AlertCircle, 
   Menu, X, RefreshCw, Database, Plus, Trash2, Link as LinkIcon, Cloud, CloudOff,
   Download, Upload, FileText, ChevronRight, ExternalLink, Filter, Search,
-  ArrowDownWideNarrow, ArrowUpNarrowWide, Clock, Calendar
+  ArrowDownWideNarrow, ArrowUpNarrowWide, Clock, Calendar, Image as ImageIcon,
+  Lock, Unlock
 } from 'lucide-react';
 import { Transaction, ViewMode, SheetConfig } from './types';
 import { generateMockData } from './utils/mockData';
 import { fetchSheetData } from './services/sheetService';
-import { getSheetUrlsFromFirebase, saveSheetUrlsToFirebase } from './services/firebaseService';
+import { 
+  getSheetUrlsFromFirebase, 
+  saveSheetUrlsToFirebase, 
+  getLogoUrlFromFirebase, 
+  saveLogoUrlToFirebase 
+} from './services/firebaseService';
 import { StatsCard } from './components/StatsCard';
 import { TransactionsTable } from './components/TransactionsTable';
 
@@ -44,6 +50,14 @@ const App: React.FC = () => {
   const [newSheetName, setNewSheetName] = useState('');
   const [newSheetUrl, setNewSheetUrl] = useState('');
   const [sortMode, setSortMode] = useState<'dateDesc' | 'dateAsc' | 'modified'>('dateDesc');
+  
+  // -- NEW STATE for Custom Logo --
+  const [logoUrl, setLogoUrl] = useState<string>('');
+  
+  // -- AUTH STATE --
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [passwordInput, setPasswordInput] = useState('');
+  const [authError, setAuthError] = useState(false);
   
   // Refs for scrolling logic
   const itemRefs = useRef<Map<string, HTMLDivElement>>(new Map());
@@ -79,6 +93,7 @@ const App: React.FC = () => {
   // -- CHANGED: Load from Firebase on Mount --
   useEffect(() => {
     const loadSettings = async () => {
+      // 1. Load Sheets
       const remoteData = await getSheetUrlsFromFirebase();
       if (remoteData) {
         const normalized = normalizeData(remoteData);
@@ -86,22 +101,34 @@ const App: React.FC = () => {
             setSheets(normalized);
             setIsFirebaseConnected(true);
             loadData(normalized);
-            return;
         }
-      } 
-      
-      // Fallback to local storage
-      const savedLocal = localStorage.getItem('storeViz_sheetUrls');
-      if (savedLocal) {
-            try {
-            const parsed = JSON.parse(savedLocal);
-            const normalized = normalizeData(parsed);
-            setSheets(normalized);
-            loadData(normalized);
-            } catch(e) {}
       } else {
+        // Fallback to local storage for sheets
+        const savedLocal = localStorage.getItem('storeViz_sheetUrls');
+        if (savedLocal) {
+            try {
+                const parsed = JSON.parse(savedLocal);
+                const normalized = normalizeData(parsed);
+                setSheets(normalized);
+                loadData(normalized);
+            } catch(e) {}
+        } else {
             // Initial Load with default
             loadData();
+        }
+      }
+      
+      // 2. Load Custom Logo (Check Firebase FIRST for sync)
+      const remoteLogo = await getLogoUrlFromFirebase();
+      if (remoteLogo) {
+          setLogoUrl(remoteLogo);
+          localStorage.setItem('storeViz_logoUrl', remoteLogo); // Cache locally
+      } else {
+          // Fallback to local storage
+          const savedLogo = localStorage.getItem('storeViz_logoUrl');
+          if (savedLogo) {
+              setLogoUrl(savedLogo);
+          }
       }
     };
     loadSettings();
@@ -131,6 +158,27 @@ const App: React.FC = () => {
     }).catch(() => {
         setIsFirebaseConnected(false);
     });
+  };
+  
+  const handleLogoChange = (url: string) => {
+      setLogoUrl(url);
+      localStorage.setItem('storeViz_logoUrl', url);
+  };
+  
+  const handleLogoBlur = () => {
+      // Save to Firebase when user finishes typing (onBlur)
+      saveLogoUrlToFirebase(logoUrl);
+  };
+  
+  const handleLogin = (e: React.FormEvent) => {
+      e.preventDefault();
+      if (passwordInput === '198') {
+          setIsAuthenticated(true);
+          setAuthError(false);
+      } else {
+          setAuthError(true);
+          setPasswordInput('');
+      }
   };
 
   const loadData = async (customSheets?: SheetConfig[]) => {
@@ -659,7 +707,7 @@ const App: React.FC = () => {
           <p className="text-xs text-gray-400 mb-2 -mt-2">💡 คลิกที่กราฟ หรือ <strong>รายการด้านขวา</strong> เพื่อกรองข้อมูล</p>
           
           {/* UPDATED: Flex layout with custom scrollable legend */}
-          <div className="h-72 flex flex-col sm:flex-row gap-4 items-center">
+          <div className="h-96 sm:h-72 flex flex-col sm:flex-row gap-4 items-center">
              {/* Chart Area */}
              <div className="flex-1 w-full h-full min-h-0">
                 <ResponsiveContainer width="100%" height="100%">
@@ -696,7 +744,7 @@ const App: React.FC = () => {
              </div>
 
              {/* Custom Scrollable Legend */}
-             <div className="w-full sm:w-56 h-full overflow-y-auto pr-2 space-y-2 custom-scrollbar">
+             <div className="w-full sm:w-56 h-40 sm:h-full overflow-y-auto pr-2 space-y-2 custom-scrollbar">
                 {categoryData.map((entry, index) => (
                     <div 
                         key={`legend-${index}`}
@@ -735,6 +783,51 @@ const App: React.FC = () => {
     </div>
   );
 
+  const renderLoginScreen = () => (
+    <div className="flex flex-col items-center justify-center h-[calc(100vh-160px)] animate-fade-in p-4">
+        <div className="bg-white p-8 rounded-2xl shadow-lg border border-gray-100 w-full max-w-sm text-center">
+           <div className="w-16 h-16 bg-red-50 rounded-full flex items-center justify-center mx-auto mb-4 text-red-500 shadow-inner">
+              <Lock size={32} />
+           </div>
+           <h3 className="text-xl font-bold text-gray-800 mb-2">ยืนยันตัวตน (Admin Access)</h3>
+           <p className="text-sm text-gray-500 mb-6">กรุณาใส่รหัสผ่านเพื่อจัดการข้อมูลร้านค้า</p>
+
+           <form onSubmit={handleLogin}>
+             <input 
+                type="password" 
+                value={passwordInput}
+                onChange={(e) => setPasswordInput(e.target.value)}
+                className={`w-full border rounded-lg px-4 py-3 text-center text-lg mb-4 focus:outline-none focus:ring-2 transition-all ${
+                    authError ? 'border-red-300 focus:ring-red-200 bg-red-50' : 'border-gray-300 focus:ring-blue-500'
+                }`}
+                placeholder="รหัสผ่าน"
+                autoFocus
+                inputMode="numeric"
+             />
+             {authError && (
+                <div className="bg-red-50 text-red-600 text-xs py-2 px-3 rounded-md mb-4 flex items-center justify-center gap-1 animate-pulse">
+                    <AlertCircle size={12} /> รหัสผ่านไม่ถูกต้อง
+                </div>
+             )}
+             <button 
+                type="submit"
+                className="w-full bg-red-600 text-white py-3 rounded-lg font-bold hover:bg-red-700 transition-colors shadow-sm active:scale-95 transform duration-150"
+             >
+                <div className="flex items-center justify-center gap-2">
+                    <Unlock size={18} /> เข้าสู่ระบบ
+                </div>
+             </button>
+           </form>
+           <button 
+             onClick={() => setActiveTab(ViewMode.DASHBOARD)}
+             className="mt-4 text-xs text-gray-400 hover:text-gray-600 underline"
+           >
+             กลับไปหน้าภาพรวม
+           </button>
+        </div>
+    </div>
+  );
+
   const renderImportTab = () => (
     <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 max-w-3xl mx-auto">
       <div className="text-center mb-6">
@@ -752,7 +845,41 @@ const App: React.FC = () => {
                  <CloudOff size={12} /> บันทึกในเครื่อง
                </span>
              )}
+             <button 
+                onClick={() => setIsAuthenticated(false)} 
+                className="ml-2 text-xs text-red-500 underline hover:text-red-700"
+             >
+                ออกจากระบบ
+             </button>
           </div>
+      </div>
+
+      {/* --- Section 0: Logo Config --- */}
+      <div className="bg-white p-5 rounded-xl border border-gray-200 mb-6 shadow-sm">
+        <h4 className="text-sm font-bold text-gray-700 mb-3 flex items-center gap-2">
+            <ImageIcon size={16} /> ตราสัญลักษณ์ร้าน (Logo)
+        </h4>
+        <div className="flex gap-2 items-center">
+            <div className="relative flex-1">
+                <input 
+                    type="text" 
+                    value={logoUrl}
+                    onChange={(e) => handleLogoChange(e.target.value)}
+                    onBlur={handleLogoBlur}
+                    className="w-full border border-gray-300 rounded-lg pl-9 pr-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                    placeholder="วางลิงก์รูปภาพโลโก้ (https://...)..."
+                />
+                <LinkIcon size={14} className="absolute left-3 top-2.5 text-gray-400" />
+            </div>
+            {logoUrl && (
+                <div className="h-10 w-10 shrink-0 border border-gray-200 rounded-md p-1 bg-gray-50 flex items-center justify-center">
+                    <img src={logoUrl} alt="Preview" className="h-full w-full object-contain" />
+                </div>
+            )}
+        </div>
+        <p className="text-[10px] text-gray-400 mt-1 ml-1">
+            * ใส่ URL ของรูปภาพเพื่อเปลี่ยนโลโก้ที่มุมซ้ายบน (บันทึกอัตโนมัติ)
+        </p>
       </div>
 
       {/* --- Section 1: Add New (Single Input) --- */}
@@ -950,10 +1077,16 @@ const App: React.FC = () => {
     <div className="min-h-screen bg-gray-50 flex flex-col md:flex-row">
       <aside className={`fixed inset-y-0 left-0 z-50 w-64 bg-white border-r border-gray-200 transform transition-transform duration-200 ease-in-out md:translate-x-0 md:relative ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'}`}>
         <div className="h-16 flex items-center px-6 border-b border-gray-100 justify-between md:justify-start">
-          <div className="flex items-center gap-2 text-indigo-600 font-bold text-xl">
-             <LayoutDashboard />
-             <span>StoreViz</span>
-          </div>
+          {logoUrl ? (
+            <div className="flex items-center gap-2">
+                <img src={logoUrl} alt="Store Logo" className="h-10 max-w-[180px] object-contain" />
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 text-indigo-600 font-bold text-xl">
+                <LayoutDashboard />
+                <span>StoreViz</span>
+            </div>
+          )}
           <button onClick={() => setIsMobileMenuOpen(false)} className="md:hidden text-gray-500">
             <X size={24} />
           </button>
@@ -997,7 +1130,11 @@ const App: React.FC = () => {
 
       <main className="flex-1 flex flex-col min-w-0 h-screen overflow-hidden">
         <header className="md:hidden h-16 bg-white border-b border-gray-200 flex items-center px-4 justify-between">
-           <h1 className="font-bold text-gray-800">StoreViz</h1>
+           {logoUrl ? (
+                <img src={logoUrl} alt="Store Logo" className="h-8 max-w-[150px] object-contain" />
+           ) : (
+                <h1 className="font-bold text-gray-800">StoreViz</h1>
+           )}
            <button onClick={() => setIsMobileMenuOpen(true)} className="p-2 text-gray-600">
              <Menu size={24} />
            </button>
@@ -1035,7 +1172,9 @@ const App: React.FC = () => {
               <TransactionsTable transactions={filteredTransactions} sheets={sheets} />
             )}
 
-            {activeTab === ViewMode.IMPORT && renderImportTab()}
+            {activeTab === ViewMode.IMPORT && (
+                isAuthenticated ? renderImportTab() : renderLoginScreen()
+            )}
           </div>
         </div>
       </main>
