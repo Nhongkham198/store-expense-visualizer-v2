@@ -1,6 +1,7 @@
 export interface SheetConfig {
   url: string;
   name: string;
+  lastModified?: number; // timestamp for sorting
 }
 
 export interface Transaction {

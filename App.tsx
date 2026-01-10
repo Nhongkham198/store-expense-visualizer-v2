@@ -1,12 +1,13 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, 
-  PieChart, Pie, Cell, Legend
+  PieChart, Pie, Cell
 } from 'recharts';
 import { 
   LayoutDashboard, List, FileSpreadsheet, Wallet, TrendingUp, AlertCircle, 
   Menu, X, RefreshCw, Database, Plus, Trash2, Link as LinkIcon, Cloud, CloudOff,
-  Download, Upload, FileText, ChevronRight, ExternalLink, Filter, Search
+  Download, Upload, FileText, ChevronRight, ExternalLink, Filter, Search,
+  ArrowDownWideNarrow, ArrowUpNarrowWide, Clock, Calendar
 } from 'lucide-react';
 import { Transaction, ViewMode, SheetConfig } from './types';
 import { generateMockData } from './utils/mockData';
@@ -33,12 +34,23 @@ const App: React.FC = () => {
   const [selectedSheetIndex, setSelectedSheetIndex] = useState<number | null>(null);
   const [sheetSearchTerm, setSheetSearchTerm] = useState<string>('');
   
+  // Chart View State
+  const [trendView, setTrendView] = useState<'daily' | 'monthly' | 'yearly'>('daily');
+
   // UI State for Multi-Sheet Input
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+
+  // -- NEW STATE for Import Tab Design --
+  const [newSheetName, setNewSheetName] = useState('');
+  const [newSheetUrl, setNewSheetUrl] = useState('');
+  const [sortMode, setSortMode] = useState<'dateDesc' | 'dateAsc' | 'modified'>('dateDesc');
   
+  // Refs for scrolling logic
+  const itemRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+
   // Initialize state with default valid URL and Name
   const [sheets, setSheets] = useState<SheetConfig[]>([
-    { url: 'https://docs.google.com/spreadsheets/d/1ZJ01yx27FMzBDKdXAF3e1Gy9s6HokAC4FsO6BESzi_w/edit#gid=0', name: 'ข้อมูลตัวอย่าง (Main)' }
+    { url: 'https://docs.google.com/spreadsheets/d/1ZJ01yx27FMzBDKdXAF3e1Gy9s6HokAC4FsO6BESzi_w/edit#gid=0', name: 'ข้อมูลตัวอย่าง (Main)', lastModified: Date.now() }
   ]);
   
   // File input ref for import
@@ -53,11 +65,15 @@ const App: React.FC = () => {
     if (typeof data[0] === 'string') {
         return data.map((url: string, index: number) => ({
             url,
-            name: `Sheet ${index + 1}`
+            name: `Sheet ${index + 1}`,
+            lastModified: Date.now()
         }));
     }
     // Assume it is already SheetConfig[]
-    return data as SheetConfig[];
+    return data.map((d: any) => ({
+        ...d,
+        lastModified: d.lastModified || Date.now() // Ensure lastModified exists
+    }));
   };
 
   // -- CHANGED: Load from Firebase on Mount --
@@ -90,6 +106,19 @@ const App: React.FC = () => {
     };
     loadSettings();
   }, []);
+
+  // -- Auto-Scroll Effect when Category is selected --
+  useEffect(() => {
+    if (selectedCategory) {
+      const node = itemRefs.current.get(selectedCategory);
+      if (node) {
+        node.scrollIntoView({ 
+            behavior: 'smooth', 
+            block: 'center' // Center the item in the list
+        });
+      }
+    }
+  }, [selectedCategory]);
 
   // -- CHANGED: Save to Firebase AND LocalStorage --
   const handleConfigChange = (newSheets: SheetConfig[]) => {
@@ -152,20 +181,35 @@ const App: React.FC = () => {
     loadData(sheets);
   };
 
-  const addSheet = () => {
-    const newSheets = [...sheets, { url: '', name: '' }];
+  const addNewSheet = () => {
+    if (!newSheetUrl.trim()) return;
+    
+    const finalName = newSheetName.trim() || `Sheet ${sheets.length + 1}`;
+    
+    const newSheets = [...sheets, { 
+        url: newSheetUrl.trim(), 
+        name: finalName,
+        lastModified: Date.now()
+    }];
+    
     handleConfigChange(newSheets);
+    setNewSheetName('');
+    setNewSheetUrl('');
   };
 
   const updateSheet = (index: number, field: keyof SheetConfig, value: string) => {
     const newSheets = [...sheets];
-    newSheets[index] = { ...newSheets[index], [field]: value };
+    newSheets[index] = { 
+        ...newSheets[index], 
+        [field]: value,
+        lastModified: Date.now() // Update timestamp on edit
+    };
     handleConfigChange(newSheets);
   };
 
   const removeSheet = (index: number) => {
     const newSheets = sheets.filter((_, i) => i !== index);
-    const finalSheets = newSheets.length ? newSheets : [{ url: '', name: '' }];
+    const finalSheets = newSheets; // Allow empty
     handleConfigChange(finalSheets);
   };
 
@@ -212,8 +256,45 @@ const App: React.FC = () => {
 
   // --- Computations ---
 
+  // Date Parsing helper for Sorting
+  const parseDateFromSheetName = (name: string): number => {
+      // Look for patterns like DD/MM/YYYY, DD-MM-YYYY
+      const match = name.match(/(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})/);
+      if (match) {
+          let year = parseInt(match[3], 10);
+          const month = parseInt(match[2], 10) - 1;
+          const day = parseInt(match[1], 10);
+          
+          // Basic check for Buddhist Year (Thai year > 2400)
+          if (year > 2400) year -= 543;
+          
+          return new Date(year, month, day).getTime();
+      }
+      return 0; // No date found
+  };
+
+  const sortedSheetIndices = useMemo(() => {
+    return sheets.map((s, i) => ({ ...s, originalIndex: i }))
+      .sort((a, b) => {
+         if (sortMode === 'modified') {
+             return (b.lastModified || 0) - (a.lastModified || 0);
+         }
+         
+         const dateA = parseDateFromSheetName(a.name);
+         const dateB = parseDateFromSheetName(b.name);
+         
+         if (dateA === 0 && dateB === 0) return 0;
+         if (dateA === 0) return 1; // Put non-dates at bottom
+         if (dateB === 0) return -1;
+
+         return sortMode === 'dateDesc' 
+            ? dateB - dateA 
+            : dateA - dateB;
+      });
+  }, [sheets, sortMode]);
+
+
   // 1. Filter Transactions based on selected sheet
-  // NOTE: This is for the charts below. They must listen to Sheet selection AND Category Selection
   const filteredTransactions = useMemo(() => {
     let tx = transactions;
     if (selectedSheetIndex !== null) {
@@ -223,13 +304,10 @@ const App: React.FC = () => {
   }, [transactions, selectedSheetIndex]);
 
   // 2. Compute Sheet Summaries for Cards
-  // UPDATED: Now respects selectedCategory to calculate totals per sheet for that category
   const sheetSummaries = useMemo(() => {
     return sheets.map((sheet, index) => {
-       // 1. Get transactions for this sheet
        const sheetTx = transactions.filter(t => t.sheetSourceIndex === index);
        
-       // 2. Filter by Category if selected
        const matchingTx = selectedCategory 
           ? sheetTx.filter(t => (t.category || 'อื่นๆ') === selectedCategory)
           : sheetTx;
@@ -241,12 +319,12 @@ const App: React.FC = () => {
          total,
          count: matchingTx.length,
          index,
-         hasMatch: matchingTx.length > 0 // Flag to dim card if not relevant
+         hasMatch: matchingTx.length > 0 
        };
     });
   }, [sheets, transactions, selectedCategory]);
 
-  // Overall Total (respects Sheet filter + Category filter if needed for KPI)
+  // Overall Total
   const totalExpense = useMemo(() => {
      let tx = filteredTransactions;
      if (selectedCategory) {
@@ -255,7 +333,7 @@ const App: React.FC = () => {
      return tx.reduce((acc, curr) => acc + curr.amount, 0);
   }, [filteredTransactions, selectedCategory]);
 
-  // Category Data for Pie Chart (Respects Sheet Filter)
+  // Category Data for Pie Chart
   const categoryData = useMemo(() => {
     const summary: Record<string, number> = {};
     filteredTransactions.forEach(t => {
@@ -268,37 +346,58 @@ const App: React.FC = () => {
     })).sort((a, b) => b.value - a.value);
   }, [filteredTransactions]);
 
-  // Daily Data (Respects Sheet Filter + Category Filter)
-  const dailyData = useMemo(() => {
-    // 1. Filter source data based on selection from Pie Chart
+  // Trend Data (Daily / Monthly / Yearly)
+  const trendData = useMemo(() => {
     const sourceTransactions = selectedCategory 
         ? filteredTransactions.filter(t => (t.category || 'อื่นๆ') === selectedCategory)
         : filteredTransactions;
 
-    const summary: Record<string, number> = {};
+    const summary = new Map<string, { date: string, amount: number, sortKey: number }>();
+    const thaiMonths = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
+
     sourceTransactions.forEach(t => {
-      // Use display date for grouping to show Thai years in chart
-      const parts = t.displayDate.split('/');
-      let dateKey = t.displayDate;
-      if (parts.length === 3) {
-         // Show DD/MM/YY(BE) e.g. 08/01/69
-         dateKey = `${parts[0]}/${parts[1]}/${parts[2].slice(-2)}`; 
+      const dateObj = new Date(t.date);
+      if (isNaN(dateObj.getTime())) return;
+
+      let key = '';
+      let displayLabel = '';
+      let sortKey = 0;
+
+      if (trendView === 'daily') {
+         // Format: DD/MM/YY
+         const day = dateObj.getDate().toString().padStart(2, '0');
+         const month = (dateObj.getMonth() + 1).toString().padStart(2, '0');
+         const yearBE = (dateObj.getFullYear() + 543).toString().slice(-2);
+         key = `${dateObj.getFullYear()}-${dateObj.getMonth()}-${dateObj.getDate()}`;
+         displayLabel = `${day}/${month}/${yearBE}`;
+         sortKey = dateObj.getTime();
+      } else if (trendView === 'monthly') {
+         // Format: MMM YY (Thai)
+         const monthIdx = dateObj.getMonth();
+         const yearBE = (dateObj.getFullYear() + 543).toString().slice(-2);
+         key = `${dateObj.getFullYear()}-${monthIdx}`;
+         displayLabel = `${thaiMonths[monthIdx]} ${yearBE}`;
+         // Sort by 1st of month
+         sortKey = new Date(dateObj.getFullYear(), monthIdx, 1).getTime();
+      } else if (trendView === 'yearly') {
+         // Format: YYYY (Thai)
+         const yearBE = dateObj.getFullYear() + 543;
+         key = `${dateObj.getFullYear()}`;
+         displayLabel = `${yearBE}`;
+         sortKey = new Date(dateObj.getFullYear(), 0, 1).getTime();
       }
-      summary[dateKey] = (summary[dateKey] || 0) + t.amount;
+
+      if (!summary.has(key)) {
+         summary.set(key, { date: displayLabel, amount: 0, sortKey });
+      }
+      summary.get(key)!.amount += t.amount;
     });
     
-    // Sort logic
-    const uniqueKeys: string[] = Array.from<string>(new Set(sourceTransactions.map(t => {
-         const parts = t.displayDate.split('/');
-         if (parts.length === 3) return `${parts[0]}/${parts[1]}/${parts[2].slice(-2)}`;
-         return t.displayDate;
-    }))).reverse();
+    // Convert Map to Array and Sort by Time (Oldest -> Newest)
+    return Array.from(summary.values())
+        .sort((a, b) => a.sortKey - b.sortKey);
 
-    return uniqueKeys.map(key => ({
-      date: key,
-      amount: summary[key] || 0
-    }));
-  }, [filteredTransactions, selectedCategory]);
+  }, [filteredTransactions, selectedCategory, trendView]);
 
   const topCategory = categoryData.length > 0 ? categoryData[0] : { name: '-', value: 0 };
 
@@ -357,7 +456,6 @@ const App: React.FC = () => {
              </div>
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            {/* 'All' Card - Always Visible */}
             <div 
                 onClick={() => setSelectedSheetIndex(null)}
                 className={`
@@ -383,18 +481,14 @@ const App: React.FC = () => {
                 </div>
             </div>
 
-            {/* Individual Sheet Cards - Filtered Logic */}
             {sheetSummaries
                 .filter(sheet => {
-                    // 1. Search overrides everything
                     if (sheetSearchTerm.trim()) {
                         return sheet.name.toLowerCase().includes(sheetSearchTerm.toLowerCase());
                     }
-                    // 2. If Category selected, show only matching sheets
                     if (selectedCategory) {
                         return sheet.hasMatch;
                     }
-                    // 3. Default: Show nothing (clean view)
                     return false;
                 })
                 .map((sheet) => (
@@ -444,7 +538,6 @@ const App: React.FC = () => {
                 ))
             }
 
-            {/* Empty State / Hint */}
             {!selectedCategory && !sheetSearchTerm && (
                 <div className="hidden sm:flex col-span-1 lg:col-span-3 items-center justify-center p-4 border-2 border-dashed border-gray-200 rounded-xl text-gray-400 text-sm bg-gray-50/50">
                     <div className="text-center">
@@ -469,7 +562,6 @@ const App: React.FC = () => {
           </span>
       </div>
 
-      {/* KPI Cards */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         <StatsCard 
           title={selectedCategory ? `ยอดรวม "${selectedCategory}"` : "ยอดรวมค่าใช้จ่าย (Total)"}
@@ -502,32 +594,48 @@ const App: React.FC = () => {
         />
       </div>
 
-      {/* Charts Row 1 */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Daily Trend */}
+        {/* --- Daily/Monthly/Yearly Trend Chart --- */}
         <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
-          <div className="flex items-center justify-between mb-4">
-             <h3 className="text-lg font-semibold text-gray-800">
-               แนวโน้มรายวัน (Daily Trend)
-               {selectedCategory && (
-                 <span className="ml-2 text-sm text-blue-600 bg-blue-50 px-2 py-1 rounded-md font-normal">
-                   — {selectedCategory}
-                 </span>
-               )}
-             </h3>
-             {selectedCategory && (
-               <button 
-                 onClick={() => setSelectedCategory(null)}
-                 className="text-xs text-gray-500 hover:text-red-500 underline"
-               >
-                 รีเซ็ต (Show All)
-               </button>
-             )}
+          <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
+             <div className="flex flex-col">
+                <h3 className="text-lg font-semibold text-gray-800 flex items-center gap-2">
+                   {trendView === 'daily' && 'แนวโน้มรายวัน (Daily Trend)'}
+                   {trendView === 'monthly' && 'แนวโน้มรายเดือน (Monthly Trend)'}
+                   {trendView === 'yearly' && 'แนวโน้มรายปี (Yearly Trend)'}
+                </h3>
+                {selectedCategory && (
+                    <span className="text-xs text-blue-600 bg-blue-50 px-2 py-0.5 rounded-md self-start mt-1">
+                    — {selectedCategory}
+                    </span>
+                )}
+             </div>
+
+             <div className="flex bg-gray-100 p-1 rounded-lg">
+                <button 
+                  onClick={() => setTrendView('daily')}
+                  className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${trendView === 'daily' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+                >
+                  วัน
+                </button>
+                <button 
+                  onClick={() => setTrendView('monthly')}
+                  className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${trendView === 'monthly' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+                >
+                  เดือน
+                </button>
+                <button 
+                  onClick={() => setTrendView('yearly')}
+                  className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${trendView === 'yearly' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+                >
+                  ปี
+                </button>
+             </div>
           </div>
           <div className="h-72">
-            {dailyData.length > 0 ? (
+            {trendData.length > 0 ? (
               <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={dailyData}>
+                <BarChart data={trendData}>
                   <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E5E7EB" />
                   <XAxis dataKey="date" stroke="#9CA3AF" tick={{fontSize: 10}} />
                   <YAxis stroke="#9CA3AF" tick={{fontSize: 12}} tickFormatter={(value) => `฿${value >= 1000 ? (value/1000).toFixed(0) + 'k' : value}`} />
@@ -535,7 +643,7 @@ const App: React.FC = () => {
                     formatter={(value: number) => [`฿${value.toLocaleString()}`, 'Amount']}
                     contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)' }}
                   />
-                  <Bar dataKey="amount" fill="#3B82F6" radius={[4, 4, 0, 0]} barSize={40} />
+                  <Bar dataKey="amount" fill="#3B82F6" radius={[4, 4, 0, 0]} barSize={trendView === 'yearly' ? 60 : 40} />
                 </BarChart>
               </ResponsiveContainer>
             ) : (
@@ -546,62 +654,81 @@ const App: React.FC = () => {
           </div>
         </div>
 
-        {/* Category Breakdown (Pie Chart) */}
         <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
           <h3 className="text-lg font-semibold text-gray-800 mb-4">สัดส่วนค่าใช้จ่าย (By Category)</h3>
           <p className="text-xs text-gray-400 mb-2 -mt-2">💡 คลิกที่กราฟ หรือ <strong>รายการด้านขวา</strong> เพื่อกรองข้อมูล</p>
-          <div className="h-72">
-            <ResponsiveContainer width="100%" height="100%">
-              <PieChart>
-                <Pie
-                  data={categoryData}
-                  cx="50%"
-                  cy="50%"
-                  innerRadius={60}
-                  outerRadius={100}
-                  fill="#8884d8"
-                  paddingAngle={5}
-                  dataKey="value"
-                  onClick={(data) => {
-                    // Toggle Logic
-                    setSelectedCategory(prev => prev === data.name ? null : data.name);
-                  }}
-                  style={{ cursor: 'pointer' }}
-                >
-                  {categoryData.map((entry, index) => (
-                    <Cell 
-                      key={`cell-${index}`} 
-                      fill={COLORS[index % COLORS.length]} 
-                      stroke={selectedCategory === entry.name ? "#333" : "none"}
-                      strokeWidth={selectedCategory === entry.name ? 2 : 0}
-                      fillOpacity={selectedCategory && selectedCategory !== entry.name ? 0.3 : 1}
-                      style={{ cursor: 'pointer', outline: 'none', transition: 'all 0.3s ease' }}
-                    />
-                  ))}
-                </Pie>
-                <RechartsTooltip formatter={(value: number) => [`฿${value.toLocaleString()}`, 'Amount']} />
-                <Legend 
-                  layout="vertical" 
-                  verticalAlign="middle" 
-                  align="right" 
-                  wrapperStyle={{ fontSize: '12px', cursor: 'pointer' }}
-                  onClick={(e) => {
-                    const categoryName = e.value;
-                    setSelectedCategory(prev => prev === categoryName ? null : categoryName);
-                  }}
-                  formatter={(value) => (
-                    <span style={{ 
-                      opacity: selectedCategory ? (selectedCategory === value ? 1 : 0.4) : 1,
-                      fontWeight: selectedCategory === value ? 'bold' : 'normal',
-                      color: selectedCategory === value ? '#1F2937' : '#4B5563',
-                      transition: 'all 0.3s ease'
-                    }}>
-                      {value}
-                    </span>
-                  )}
-                />
-              </PieChart>
-            </ResponsiveContainer>
+          
+          {/* UPDATED: Flex layout with custom scrollable legend */}
+          <div className="h-72 flex flex-col sm:flex-row gap-4 items-center">
+             {/* Chart Area */}
+             <div className="flex-1 w-full h-full min-h-0">
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie
+                      data={categoryData}
+                      cx="50%"
+                      cy="50%"
+                      innerRadius={60}
+                      outerRadius={90}
+                      fill="#8884d8"
+                      paddingAngle={5}
+                      dataKey="value"
+                      onClick={(data) => {
+                        setSelectedCategory(prev => prev === data.name ? null : data.name);
+                      }}
+                      style={{ cursor: 'pointer' }}
+                    >
+                      {categoryData.map((entry, index) => (
+                        <Cell 
+                          key={`cell-${index}`} 
+                          fill={COLORS[index % COLORS.length]} 
+                          stroke={selectedCategory === entry.name ? "#333" : "none"}
+                          strokeWidth={selectedCategory === entry.name ? 2 : 0}
+                          fillOpacity={selectedCategory && selectedCategory !== entry.name ? 0.3 : 1}
+                          style={{ cursor: 'pointer', outline: 'none', transition: 'all 0.3s ease' }}
+                        />
+                      ))}
+                    </Pie>
+                    <RechartsTooltip formatter={(value: number) => [`฿${value.toLocaleString()}`, 'Amount']} />
+                    {/* Removed default Legend */}
+                  </PieChart>
+                </ResponsiveContainer>
+             </div>
+
+             {/* Custom Scrollable Legend */}
+             <div className="w-full sm:w-56 h-full overflow-y-auto pr-2 space-y-2 custom-scrollbar">
+                {categoryData.map((entry, index) => (
+                    <div 
+                        key={`legend-${index}`}
+                        // Add ref to each item
+                        ref={(el) => {
+                           if (el) itemRefs.current.set(entry.name, el);
+                           else itemRefs.current.delete(entry.name);
+                        }}
+                        onClick={() => setSelectedCategory(prev => prev === entry.name ? null : entry.name)}
+                        className={`flex items-center gap-2 text-xs cursor-pointer p-1.5 rounded-md transition-all ${
+                            selectedCategory === entry.name 
+                            ? 'bg-gray-100' 
+                            : 'hover:bg-gray-50'
+                        }`}
+                    >
+                        <div 
+                            className="w-3 h-3 rounded-sm shrink-0" 
+                            style={{ backgroundColor: COLORS[index % COLORS.length] }}
+                        />
+                        <span 
+                            className={`truncate ${
+                                selectedCategory === entry.name 
+                                ? 'text-gray-900 font-bold' 
+                                : 'text-gray-600' // Changed to match the requested gray
+                            }`}
+                            title={entry.name}
+                        >
+                            {entry.name}
+                        </span>
+                    </div>
+                ))}
+             </div>
           </div>
         </div>
       </div>
@@ -609,111 +736,196 @@ const App: React.FC = () => {
   );
 
   const renderImportTab = () => (
-    <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-8 max-w-2xl mx-auto">
-      <div className="text-center mb-8">
-          <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4 text-green-600">
-            <Database size={32} />
+    <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 max-w-3xl mx-auto">
+      <div className="text-center mb-6">
+          <div className="w-14 h-14 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-3 text-green-600">
+            <Database size={28} />
           </div>
-          <h3 className="text-lg font-bold text-gray-800">จัดการข้อมูล Google Sheet</h3>
-          <p className="text-gray-500 mt-2">
-            เพิ่มลิงก์ Google Sheet และตั้งชื่อเพื่อให้จำง่าย <br/>
-            (เช่น "ยอดเดือนมกราคม", "สาขา 1")
-          </p>
-          <div className="mt-4 flex items-center justify-center gap-2">
+          <h3 className="text-xl font-bold text-gray-800">จัดการข้อมูล Google Sheet</h3>
+          <div className="mt-2 flex items-center justify-center gap-2">
              {isFirebaseConnected ? (
-               <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-green-100 text-green-700">
-                 <Cloud size={14} /> บันทึกบน Cloud (Firebase)
+               <span className="inline-flex items-center gap-1.5 px-3 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700">
+                 <Cloud size={12} /> บันทึกบน Cloud
                </span>
              ) : (
-               <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-500">
-                 <CloudOff size={14} /> บันทึกในเครื่อง (Local)
+               <span className="inline-flex items-center gap-1.5 px-3 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-500">
+                 <CloudOff size={12} /> บันทึกในเครื่อง
                </span>
              )}
           </div>
       </div>
 
-      <div className="space-y-4">
-        <label className="block text-sm font-medium text-gray-700 mb-2">
-           รายการแผ่นงาน (List of Sheets)
-        </label>
+      {/* --- Section 1: Add New (Single Input) --- */}
+      <div className="bg-gray-50 p-5 rounded-xl border border-blue-100 mb-8 shadow-sm">
+        <h4 className="text-sm font-bold text-blue-800 flex items-center gap-2 mb-3">
+            <Plus size={16} /> เพิ่มรายการใหม่ (Add New)
+        </h4>
+        <div className="flex flex-col md:flex-row gap-3">
+             <div className="w-full md:w-1/3 space-y-1">
+                <label className="text-xs text-gray-500 font-medium ml-1">ชื่อชีท (เช่น 09/01/2568)</label>
+                <div className="relative">
+                    <input 
+                        type="text" 
+                        value={newSheetName}
+                        onChange={(e) => setNewSheetName(e.target.value)}
+                        className="w-full border border-gray-300 rounded-lg pl-8 pr-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                        placeholder="ระบุวันที่/ชื่อ..."
+                    />
+                    <FileText size={14} className="absolute left-2.5 top-2.5 text-gray-400" />
+                </div>
+             </div>
+             <div className="w-full md:w-2/3 space-y-1">
+                <label className="text-xs text-gray-500 font-medium ml-1">ลิงก์ Google Sheet (URL)</label>
+                <div className="flex gap-2">
+                    <div className="relative flex-1">
+                        <input 
+                            type="text" 
+                            value={newSheetUrl}
+                            onChange={(e) => setNewSheetUrl(e.target.value)}
+                            className="w-full border border-gray-300 rounded-lg pl-9 pr-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                            placeholder="https://docs.google.com/spreadsheets/..."
+                        />
+                        <LinkIcon size={16} className="absolute left-3 top-2.5 text-gray-400" />
+                    </div>
+                    <button 
+                        onClick={addNewSheet}
+                        disabled={!newSheetUrl}
+                        className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
+                    >
+                        บันทึก
+                    </button>
+                </div>
+             </div>
+        </div>
+      </div>
+
+      {/* --- Section 2: Sort Toolbar --- */}
+      <div className="flex flex-col sm:flex-row justify-between items-end sm:items-center gap-3 mb-3 pb-3 border-b border-gray-100">
+         <h4 className="text-base font-semibold text-gray-700 flex items-center gap-2">
+            รายการย้อนหลัง ({sheets.length})
+         </h4>
+         
+         <div className="flex items-center bg-gray-50 p-1 rounded-lg border border-gray-200">
+             <span className="text-xs text-gray-500 px-2 font-medium">เรียงตาม:</span>
+             <button 
+               onClick={() => setSortMode('dateDesc')}
+               className={`p-1.5 rounded-md flex items-center gap-1 text-xs transition-colors ${sortMode === 'dateDesc' ? 'bg-white text-blue-600 shadow-sm font-bold' : 'text-gray-500 hover:text-gray-700'}`}
+               title="วันที่ (ปัจจุบัน -> อดีต)"
+             >
+                <ArrowDownWideNarrow size={14} /> ล่าสุด
+             </button>
+             <div className="w-px h-4 bg-gray-300 mx-1"></div>
+             <button 
+               onClick={() => setSortMode('dateAsc')}
+               className={`p-1.5 rounded-md flex items-center gap-1 text-xs transition-colors ${sortMode === 'dateAsc' ? 'bg-white text-blue-600 shadow-sm font-bold' : 'text-gray-500 hover:text-gray-700'}`}
+               title="วันที่ (อดีต -> ปัจจุบัน)"
+             >
+                <ArrowUpNarrowWide size={14} /> เก่าสุด
+             </button>
+             <div className="w-px h-4 bg-gray-300 mx-1"></div>
+             <button 
+               onClick={() => setSortMode('modified')}
+               className={`p-1.5 rounded-md flex items-center gap-1 text-xs transition-colors ${sortMode === 'modified' ? 'bg-white text-blue-600 shadow-sm font-bold' : 'text-gray-500 hover:text-gray-700'}`}
+               title="วันที่แก้ไขข้อมูล"
+             >
+                <Clock size={14} /> แก้ไข
+             </button>
+         </div>
+      </div>
+
+      {/* --- Section 3: List View (Sorted) --- */}
+      <div className="space-y-3 max-h-[500px] overflow-y-auto pr-1">
+        {sheets.length === 0 && (
+            <div className="text-center py-10 text-gray-400 border-2 border-dashed rounded-lg">
+                ยังไม่มีข้อมูล
+            </div>
+        )}
         
-        {sheets.map((sheet, index) => (
-            <div key={index} className="flex flex-col md:flex-row gap-2 items-start md:items-center animate-fade-in bg-gray-50 p-3 rounded-lg border border-gray-100">
+        {sortedSheetIndices.map((sheet) => {
+            const originalIndex = sheet.originalIndex;
+            return (
+            <div key={originalIndex} className="flex flex-col md:flex-row gap-2 items-start md:items-center bg-white hover:bg-gray-50 p-3 rounded-lg border border-gray-200 transition-colors group">
               <div className="flex items-center gap-2 w-full md:w-auto">
-                  <div className="bg-white border p-2 rounded text-gray-500 text-xs w-8 text-center shrink-0">{index + 1}</div>
+                  <div className="bg-gray-100 text-gray-500 text-xs w-6 h-6 flex items-center justify-center rounded shrink-0 font-medium">
+                      {sheets.length - originalIndex}
+                  </div>
                   
-                  {/* Name Input */}
+                  {/* Name Input (Inline Edit) - COLOR CHANGED TO GRAY-600 */}
                   <div className="relative w-full md:w-48">
                     <input 
                         type="text" 
                         value={sheet.name}
-                        onChange={(e) => updateSheet(index, 'name', e.target.value)}
-                        className="w-full border rounded-lg pl-8 pr-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                        placeholder="ชื่อชีท (เช่น ม.ค. 67)"
+                        onChange={(e) => updateSheet(originalIndex, 'name', e.target.value)}
+                        className="w-full bg-transparent border-b border-transparent hover:border-gray-300 focus:border-blue-500 px-2 py-1 text-sm text-gray-600 focus:outline-none transition-colors"
+                        placeholder="ชื่อ..."
                     />
-                    <FileText size={14} className="absolute left-2.5 top-2.5 text-gray-400" />
                   </div>
               </div>
 
-              {/* URL Input */}
-              <div className="relative flex-1 w-full">
+              {/* URL Input (Inline Edit) */}
+              <div className="relative flex-1 w-full flex items-center gap-2">
+                <LinkIcon size={14} className="text-gray-300 shrink-0" />
                 <input 
                     type="text" 
                     value={sheet.url}
-                    onChange={(e) => updateSheet(index, 'url', e.target.value)}
-                    className="w-full border rounded-lg pl-9 pr-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    placeholder="https://docs.google.com/spreadsheets/..."
+                    onChange={(e) => updateSheet(originalIndex, 'url', e.target.value)}
+                    className="w-full bg-transparent border-b border-transparent hover:border-gray-300 focus:border-blue-500 py-1 text-sm text-gray-500 focus:text-gray-800 focus:outline-none transition-colors truncate"
+                    placeholder="URL..."
                 />
-                <LinkIcon size={16} className="absolute left-3 top-2.5 text-gray-400" />
               </div>
 
-              <button 
-                onClick={() => removeSheet(index)}
-                className="self-end md:self-auto p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
-                title="ลบรายการนี้"
-              >
-                <Trash2 size={18} />
-              </button>
+              <div className="flex items-center gap-1 opacity-100 md:opacity-0 group-hover:opacity-100 transition-opacity">
+                  <a 
+                    href={sheet.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="p-2 text-gray-400 hover:text-blue-500 rounded-lg hover:bg-blue-50"
+                    title="เปิดลิงก์"
+                  >
+                     <ExternalLink size={16} />
+                  </a>
+                  <button 
+                    onClick={() => removeSheet(originalIndex)}
+                    className="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                    title="ลบรายการนี้"
+                  >
+                    <Trash2 size={16} />
+                  </button>
+              </div>
             </div>
-        ))}
-
-        <div className="flex gap-3 pt-2">
-            <button 
-              onClick={addSheet}
-              className="flex-1 py-2 border-2 border-dashed border-gray-300 text-gray-500 rounded-lg hover:border-blue-500 hover:text-blue-500 hover:bg-blue-50 transition-all flex items-center justify-center gap-2 text-sm font-medium"
-            >
-              <Plus size={16} />
-              เพิ่มรายการ (Add Sheet)
-            </button>
-            
-            <button 
+            );
+        })}
+      </div>
+      
+      {/* Bottom Actions */}
+      <div className="mt-6 flex flex-col md:flex-row gap-3 pt-4 border-t border-gray-100">
+           <button 
               onClick={handleSync}
               disabled={isLoading}
-              className="flex-1 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors flex items-center justify-center gap-2 disabled:opacity-50 shadow-sm font-medium"
+              className="flex-1 py-2.5 bg-gray-800 text-white rounded-lg hover:bg-gray-900 transition-colors flex items-center justify-center gap-2 disabled:opacity-50 shadow-sm font-medium"
             >
               <RefreshCw size={18} className={isLoading ? "animate-spin" : ""} />
-              {isLoading ? "รวมข้อมูลและแสดงผล (Sync All)" : "รวมข้อมูลและแสดงผล (Sync All)"}
+              {isLoading ? "กำลังประมวลผล..." : "รีเฟรชข้อมูลทั้งหมด (Sync All)"}
             </button>
-        </div>
+      </div>
 
-        {/* Import/Export Tools */}
-        <div className="mt-8 pt-6 border-t border-gray-100">
-           <h4 className="text-sm font-semibold text-gray-700 mb-3">เครื่องมือจัดการ (Tools)</h4>
-           <div className="flex gap-3">
+      {/* Import/Export Tools */}
+      <div className="mt-6">
+           <div className="flex gap-3 justify-center">
               <button 
                  onClick={handleExportConfig}
-                 className="flex-1 py-2 px-3 bg-gray-50 text-gray-700 border border-gray-200 rounded-lg text-sm hover:bg-gray-100 flex items-center justify-center gap-2 transition-colors"
+                 className="text-gray-500 text-xs hover:text-gray-700 flex items-center gap-1"
               >
-                 <Download size={16} />
-                 ส่งออก (Export)
+                 <Upload size={12} />
+                 Backup Config (.json)
               </button>
               
               <button 
                  onClick={() => fileInputRef.current?.click()}
-                 className="flex-1 py-2 px-3 bg-gray-50 text-gray-700 border border-gray-200 rounded-lg text-sm hover:bg-gray-100 flex items-center justify-center gap-2 transition-colors"
+                 className="text-gray-500 text-xs hover:text-gray-700 flex items-center gap-1"
               >
-                 <Upload size={16} />
-                 นำเข้า (Import)
+                 <Download size={12} />
+                 Restore Config
               </button>
               <input 
                  type="file" 
@@ -723,24 +935,14 @@ const App: React.FC = () => {
                  onChange={handleImportConfig}
               />
            </div>
-           <p className="text-xs text-gray-400 mt-2 text-center">
-             สามารถส่งออกรายการเป็นไฟล์ .json เพื่อสำรองข้อมูลได้
-           </p>
-        </div>
-
-        {!isFirebaseConnected && (
-            <div className="bg-orange-50 border border-orange-100 p-4 rounded-lg mt-4 text-xs text-orange-800">
-               <strong>⚠️ คำเตือน:</strong> ขณะนี้ระบบยังไม่ได้เชื่อมต่อ Firebase (บันทึกเฉพาะในเครื่องนี้)
-            </div>
-        )}
-        
-        {error && (
+      </div>
+      
+      {error && (
           <div className="bg-red-50 text-red-600 p-3 rounded-lg text-sm flex items-start gap-2 mt-4">
             <AlertCircle size={16} className="mt-0.5 shrink-0" />
             {error}
           </div>
-        )}
-      </div>
+      )}
     </div>
   );
 

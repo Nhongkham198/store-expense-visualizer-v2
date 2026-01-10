@@ -115,12 +115,32 @@ const cleanAmount = (amtStr: string): number => {
     return isNaN(num) ? 0 : num;
 };
 
+// Updated Extractor to handle Published Links and tricky GIDs
 const extractSheetInfo = (urlOrId: string) => {
-  const idMatch = urlOrId.match(/\/d\/([a-zA-Z0-9-_]+)/);
-  const gidMatch = urlOrId.match(/[#&]gid=([0-9]+)/);
-  const sheetId = idMatch ? idMatch[1] : urlOrId; 
+  const cleanUrl = urlOrId.trim();
+  
+  // Check for "Published to Web" format (contains /d/e/)
+  const isPublished = cleanUrl.includes('/d/e/');
+
+  // Extract GID (Works for both ?gid= and #gid= and &gid=)
+  const gidMatch = cleanUrl.match(/[?&#]gid=([0-9]+)/);
   const gid = gidMatch ? gidMatch[1] : null;
-  return { sheetId, gid };
+
+  if (isPublished) {
+    return { sheetId: null, gid, isPublished, cleanUrl };
+  }
+
+  // Standard Link extraction
+  // Format: https://docs.google.com/spreadsheets/d/SPREADSHEET_ID/edit...
+  // Use {15,} to ensure we match a long ID and not a short path segment (like 'e' or 'u')
+  const idMatch = cleanUrl.match(/\/d\/([a-zA-Z0-9-_]{15,})/);
+  
+  // If no regex match, check if the input itself looks like an ID (no slashes, long enough)
+  const sheetId = idMatch 
+    ? idMatch[1] 
+    : (!cleanUrl.includes('/') && cleanUrl.length > 15 ? cleanUrl : null);
+
+  return { sheetId, gid, isPublished: false, cleanUrl };
 };
 
 // Added sourceIndex to generate unique IDs across multiple sheets
@@ -130,11 +150,44 @@ export const fetchSheetData = async (
   sourceIndex: number = 0,
   sheetName: string = ''
 ): Promise<Transaction[]> => {
-  const { sheetId, gid } = extractSheetInfo(urlOrId);
+  const { sheetId, gid, isPublished, cleanUrl } = extractSheetInfo(urlOrId);
 
-  let url = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv`;
-  if (gid) {
-    url += `&gid=${gid}`;
+  let url = '';
+
+  if (isPublished) {
+     // Handle Published Links (e.g. /d/e/.../pubhtml)
+     url = cleanUrl;
+     // If it's a pubhtml link, change to pub?output=csv
+     if (url.includes('/pubhtml')) {
+        url = url.replace(/\/pubhtml.*/, '/pub?output=csv');
+     } else if (url.includes('/pub')) {
+        // Ensure output=csv exists
+        if (!url.includes('output=csv')) {
+            url += (url.includes('?') ? '&' : '?') + 'output=csv';
+        }
+     } else {
+        // Fallback for raw /d/e/ links without extension
+         if (!url.includes('output=csv')) {
+            url += (url.includes('?') ? '&' : '?') + 'output=csv';
+         }
+     }
+     
+     // Append GID if found and not present
+     if (gid && !url.includes(`gid=${gid}`)) {
+         url += `&gid=${gid}`;
+     }
+
+  } else {
+      // Standard Links
+      if (!sheetId) {
+        console.warn(`Skipping invalid sheet URL at index ${sourceIndex}: ${urlOrId}`);
+        return [];
+      }
+
+      url = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv`;
+      if (gid) {
+        url += `&gid=${gid}`;
+      }
   }
 
   try {
@@ -143,7 +196,10 @@ export const fetchSheetData = async (
         headers: { 'Content-Type': 'text/csv' }
     });
 
-    if (!response.ok) throw new Error(`Status ${response.status}`);
+    if (!response.ok) {
+        // Provide more detailed error info
+        throw new Error(`Status ${response.status} (${response.statusText})`);
+    }
     
     const csvText = await response.text();
     const rows = parseCSV(csvText);
@@ -209,7 +265,7 @@ export const fetchSheetData = async (
       });
     }
 
-    return transactions; // Sorting will happen after merging
+    return transactions; 
 
   } catch (error) {
     console.error(`Error fetching sheet index ${sourceIndex}:`, error);
