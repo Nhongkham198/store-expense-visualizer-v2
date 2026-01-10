@@ -1,0 +1,5 @@
+{
+  "name": "Store Expense Visualizer (Thai)",
+  "description": "A dashboard for visualizing store expenses from Google Sheets data, supporting Thai dates (BE).",
+  "requestFramePermissions": []
+}
