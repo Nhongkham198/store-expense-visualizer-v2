@@ -8,7 +8,7 @@ import {
   Menu, X, RefreshCw, Database, Plus, Trash2, Link as LinkIcon, Cloud, CloudOff,
   Download, Upload, FileText, ChevronRight, ExternalLink, Filter, Search,
   ArrowDownWideNarrow, ArrowUpNarrowWide, Clock, Calendar, Image as ImageIcon,
-  Lock, Unlock
+  Lock, Unlock, ChevronLeft, ChevronRight as ChevronRightIcon, Store, MapPin
 } from 'lucide-react';
 import { Transaction, ViewMode, SheetConfig } from './types';
 import { generateMockData } from './utils/mockData';
@@ -17,7 +17,9 @@ import {
   getSheetUrlsFromFirebase, 
   saveSheetUrlsToFirebase, 
   getLogoUrlFromFirebase, 
-  saveLogoUrlToFirebase 
+  saveLogoUrlToFirebase,
+  getStoreInfoFromFirebase,
+  saveStoreInfoToFirebase
 } from './services/firebaseService';
 import { StatsCard } from './components/StatsCard';
 import { TransactionsTable } from './components/TransactionsTable';
@@ -52,8 +54,10 @@ const App: React.FC = () => {
   const [newSheetUrl, setNewSheetUrl] = useState('');
   const [sortMode, setSortMode] = useState<'dateDesc' | 'dateAsc' | 'modified'>('dateDesc');
   
-  // -- NEW STATE for Custom Logo --
+  // -- NEW STATE for Custom Logo & Store Info --
   const [logoUrl, setLogoUrl] = useState<string>('');
+  const [storeName, setStoreName] = useState<string>('StoreViz');
+  const [branchName, setBranchName] = useState<string>('');
   
   // -- AUTH STATE --
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -62,6 +66,7 @@ const App: React.FC = () => {
   
   // Refs for scrolling logic
   const itemRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
 
   // Initialize state with default valid URL and Name
   const [sheets, setSheets] = useState<SheetConfig[]>([
@@ -131,6 +136,20 @@ const App: React.FC = () => {
               setLogoUrl(savedLogo);
           }
       }
+
+      // 3. Load Store Info
+      const remoteInfo = await getStoreInfoFromFirebase();
+      if (remoteInfo) {
+          setStoreName(remoteInfo.name || 'StoreViz');
+          setBranchName(remoteInfo.branch || '');
+      } else {
+          const savedInfo = localStorage.getItem('storeViz_info');
+          if (savedInfo) {
+              const parsed = JSON.parse(savedInfo);
+              setStoreName(parsed.name || 'StoreViz');
+              setBranchName(parsed.branch || '');
+          }
+      }
     };
     loadSettings();
   }, []);
@@ -167,8 +186,12 @@ const App: React.FC = () => {
   };
   
   const handleLogoBlur = () => {
-      // Save to Firebase when user finishes typing (onBlur)
       saveLogoUrlToFirebase(logoUrl);
+  };
+
+  const handleStoreInfoSave = () => {
+      localStorage.setItem('storeViz_info', JSON.stringify({ name: storeName, branch: branchName }));
+      saveStoreInfoToFirebase(storeName, branchName);
   };
   
   const handleLogin = (e: React.FormEvent) => {
@@ -301,6 +324,17 @@ const App: React.FC = () => {
     reader.readAsText(file);
     // Reset input
     if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  // Helper function to scroll the sheet list
+  const scrollSheets = (direction: 'left' | 'right') => {
+    if (scrollContainerRef.current) {
+        const scrollAmount = 300; // Scroll width of roughly one card
+        scrollContainerRef.current.scrollBy({
+            left: direction === 'left' ? -scrollAmount : scrollAmount,
+            behavior: 'smooth'
+        });
+    }
   };
 
   // --- Computations ---
@@ -522,7 +556,7 @@ const App: React.FC = () => {
         </div>
       )}
       
-      {/* --- Sheet Cards (File View) --- */}
+      {/* --- Sheet Cards (Sticky "Total" + Horizontal Scroll) --- */}
       <div>
         <div className="flex items-center justify-between mb-3 flex-wrap gap-3">
              <div className="flex items-center gap-3">
@@ -564,98 +598,116 @@ const App: React.FC = () => {
                     รีเซ็ต (Reset)
                 </button>
                 )}
+                
+                {/* Scroll Buttons */}
+                <div className="flex gap-1">
+                    <button onClick={() => scrollSheets('left')} className="p-1 rounded-full hover:bg-gray-200 text-gray-500">
+                        <ChevronLeft size={18} />
+                    </button>
+                    <button onClick={() => scrollSheets('right')} className="p-1 rounded-full hover:bg-gray-200 text-gray-500">
+                        <ChevronRightIcon size={18} />
+                    </button>
+                </div>
              </div>
         </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            <div 
-                onClick={() => setSelectedSheetIndex(null)}
-                className={`
-                    p-4 rounded-xl border cursor-pointer transition-all duration-200 group
-                    ${selectedSheetIndex === null 
-                        ? 'bg-blue-600 border-blue-600 shadow-md transform scale-[1.02]' 
-                        : 'bg-white border-gray-200 hover:border-blue-400 hover:shadow-sm'
-                    }
-                `}
-            >
-                <div className="flex justify-between items-start">
-                    <div className={`p-2 rounded-lg ${selectedSheetIndex === null ? 'bg-white/20 text-white' : 'bg-blue-50 text-blue-600'}`}>
-                        <LayoutDashboard size={20} />
+
+        {/* --- STICKY LAYOUT --- */}
+        <div className="flex gap-4 items-start">
+            {/* 1. STICKY: Total Card */}
+            <div className="shrink-0 z-10">
+                <div 
+                    onClick={() => setSelectedSheetIndex(null)}
+                    className={`
+                        w-[220px] p-4 rounded-xl border cursor-pointer transition-all duration-200 group h-full flex flex-col justify-between
+                        ${selectedSheetIndex === null 
+                            ? 'bg-blue-600 border-blue-600 shadow-lg transform scale-[1.02] ring-2 ring-blue-200' 
+                            : 'bg-white border-gray-200 hover:border-blue-400 hover:shadow-md'
+                        }
+                    `}
+                    style={{ minHeight: '130px' }}
+                >
+                    <div className="flex justify-between items-start">
+                        <div className={`p-2 rounded-lg ${selectedSheetIndex === null ? 'bg-white/20 text-white' : 'bg-blue-50 text-blue-600'}`}>
+                            <LayoutDashboard size={20} />
+                        </div>
                     </div>
-                </div>
-                <div className="mt-3">
-                    <p className={`text-sm font-medium ${selectedSheetIndex === null ? 'text-blue-100' : 'text-gray-500'}`}>
-                        {(selectedCategory || selectedDateKey) ? `รวมที่เลือก` : 'ภาพรวมทั้งหมด (All)'}
-                    </p>
-                    <h4 className={`text-lg font-bold ${selectedSheetIndex === null ? 'text-white' : 'text-gray-800'}`}>
-                        {selectedCategory || selectedDateKey ? `฿${sheetSummaries.reduce((a,b)=>a+b.total, 0).toLocaleString()}` : `${sheets.length} แผ่นงาน`}
-                    </h4>
+                    <div className="mt-3">
+                        <p className={`text-sm font-medium ${selectedSheetIndex === null ? 'text-blue-100' : 'text-gray-500'}`}>
+                            {(selectedCategory || selectedDateKey) ? `รวมที่เลือก` : 'ภาพรวมทั้งหมด'}
+                        </p>
+                        <h4 className={`text-xl font-bold truncate ${selectedSheetIndex === null ? 'text-white' : 'text-gray-800'}`}>
+                            {selectedCategory || selectedDateKey ? `฿${sheetSummaries.reduce((a,b)=>a+b.total, 0).toLocaleString()}` : `${sheets.length} แผ่นงาน`}
+                        </h4>
+                    </div>
                 </div>
             </div>
 
-            {sheetSummaries
-                .filter(sheet => {
-                    if (sheetSearchTerm.trim()) {
-                        return sheet.name.toLowerCase().includes(sheetSearchTerm.toLowerCase());
-                    }
-                    if (selectedCategory || selectedDateKey) {
-                        return sheet.hasMatch;
-                    }
-                    return false;
-                })
-                .map((sheet) => (
-                    <div 
-                        key={sheet.index}
-                        onClick={() => setSelectedSheetIndex(sheet.index)}
-                        className={`
-                            relative p-4 rounded-xl border cursor-pointer transition-all duration-200 group animate-fade-in
-                            ${selectedSheetIndex === sheet.index
-                                ? 'bg-emerald-600 border-emerald-600 shadow-md transform scale-[1.02] z-10' 
-                                : 'bg-white border-gray-200 hover:border-emerald-400 hover:shadow-sm'
+            {/* 2. SCROLLABLE: Sheet List */}
+            <div 
+                ref={scrollContainerRef}
+                className="flex-1 overflow-x-auto pb-4 -mb-4 snap-x cursor-grab active:cursor-grabbing scrollbar-hide"
+                style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+            >
+                <div className="flex gap-4">
+                    {sheetSummaries
+                        .filter(sheet => {
+                            if (sheetSearchTerm.trim()) {
+                                return sheet.name.toLowerCase().includes(sheetSearchTerm.toLowerCase());
                             }
-                        `}
-                    >
-                        <div className="flex justify-between items-start">
-                            <div className={`p-2 rounded-lg ${selectedSheetIndex === sheet.index ? 'bg-white/20 text-white' : 'bg-green-50 text-green-600'}`}>
-                                <FileSpreadsheet size={20} />
+                            if (selectedCategory || selectedDateKey) {
+                                return sheet.hasMatch;
+                            }
+                            return true; 
+                        })
+                        .map((sheet) => (
+                            <div 
+                                key={sheet.index}
+                                onClick={() => setSelectedSheetIndex(sheet.index)}
+                                className={`
+                                    min-w-[220px] max-w-[220px] relative p-4 rounded-xl border cursor-pointer transition-all duration-200 group snap-start flex flex-col justify-between
+                                    ${selectedSheetIndex === sheet.index
+                                        ? 'bg-emerald-600 border-emerald-600 shadow-md transform scale-[1.02] z-10' 
+                                        : 'bg-white border-gray-200 hover:border-emerald-400 hover:shadow-sm'
+                                    }
+                                `}
+                                style={{ minHeight: '130px' }}
+                            >
+                                <div className="flex justify-between items-start">
+                                    <div className={`p-2 rounded-lg ${selectedSheetIndex === sheet.index ? 'bg-white/20 text-white' : 'bg-green-50 text-green-600'}`}>
+                                        <FileSpreadsheet size={20} />
+                                    </div>
+                                    {sheet.url && (
+                                        <a 
+                                            href={sheet.url} 
+                                            target="_blank" 
+                                            rel="noreferrer"
+                                            onClick={(e) => e.stopPropagation()} 
+                                            className={`p-1.5 rounded-md transition-colors ${selectedSheetIndex === sheet.index ? 'text-emerald-100 hover:bg-white/20 hover:text-white' : 'text-gray-400 hover:text-blue-600 hover:bg-gray-100'}`}
+                                            title="เปิด Google Sheet ต้นฉบับ"
+                                        >
+                                            <ExternalLink size={14} />
+                                        </a>
+                                    )}
+                                </div>
+                                <div className="mt-3">
+                                    <p className={`text-sm font-medium truncate pr-2 ${selectedSheetIndex === sheet.index ? 'text-emerald-100' : 'text-gray-500'}`} title={sheet.name}>
+                                        {sheet.name || `Sheet ${sheet.index + 1}`}
+                                    </p>
+                                    <h4 className={`text-lg font-bold ${selectedSheetIndex === sheet.index ? 'text-white' : 'text-gray-800'}`}>
+                                        ฿{sheet.total.toLocaleString()}
+                                    </h4>
+                                    <div className={`text-xs mt-1 ${selectedSheetIndex === sheet.index ? 'text-emerald-200' : 'text-gray-400'}`}>
+                                        {selectedCategory || selectedDateKey
+                                        ? `พบ ${sheet.count} รายการ`
+                                        : `${sheet.count} รายการ`
+                                        }
+                                    </div>
+                                </div>
                             </div>
-                            {sheet.url && (
-                                <a 
-                                    href={sheet.url} 
-                                    target="_blank" 
-                                    rel="noreferrer"
-                                    onClick={(e) => e.stopPropagation()} 
-                                    className={`p-1.5 rounded-md transition-colors ${selectedSheetIndex === sheet.index ? 'text-emerald-100 hover:bg-white/20 hover:text-white' : 'text-gray-400 hover:text-blue-600 hover:bg-gray-100'}`}
-                                    title="เปิด Google Sheet ต้นฉบับ"
-                                >
-                                    <ExternalLink size={14} />
-                                </a>
-                            )}
-                        </div>
-                        <div className="mt-3">
-                            <p className={`text-sm font-medium truncate pr-2 ${selectedSheetIndex === sheet.index ? 'text-emerald-100' : 'text-gray-500'}`}>
-                                {sheet.name || `Sheet ${sheet.index + 1}`}
-                            </p>
-                            <h4 className={`text-lg font-bold ${selectedSheetIndex === sheet.index ? 'text-white' : 'text-gray-800'}`}>
-                                ฿{sheet.total.toLocaleString()}
-                            </h4>
-                            <div className={`text-xs mt-1 ${selectedSheetIndex === sheet.index ? 'text-emerald-200' : 'text-gray-400'}`}>
-                                {selectedCategory || selectedDateKey
-                                   ? `พบ ${sheet.count} รายการ`
-                                   : `${sheet.count} รายการ`
-                                }
-                            </div>
-                        </div>
-                    </div>
-                ))
-            }
-
-            {!selectedCategory && !selectedDateKey && !sheetSearchTerm && (
-                <div className="hidden sm:flex col-span-1 lg:col-span-3 items-center justify-center p-4 border-2 border-dashed border-gray-200 rounded-xl text-gray-400 text-sm bg-gray-50/50">
-                    <div className="text-center">
-                        <p>👆 เลือกหมวดหมู่หรือช่วงเวลาจากกราฟ เพื่อกรองข้อมูล</p>
-                    </div>
+                        ))
+                    }
                 </div>
-            )}
+            </div>
         </div>
       </div>
 
@@ -957,12 +1009,14 @@ const App: React.FC = () => {
           </div>
       </div>
 
-      {/* --- Section 0: Logo Config --- */}
+      {/* --- Section 0: Store Identity Config --- */}
       <div className="bg-white p-5 rounded-xl border border-gray-200 mb-6 shadow-sm">
         <h4 className="text-sm font-bold text-gray-700 mb-3 flex items-center gap-2">
-            <ImageIcon size={16} /> ตราสัญลักษณ์ร้าน (Logo)
+            <Store size={16} /> ข้อมูลร้านค้า (Store Identity)
         </h4>
-        <div className="flex gap-2 items-center">
+        
+        {/* Logo Input */}
+        <div className="flex gap-2 items-center mb-3">
             <div className="relative flex-1">
                 <input 
                     type="text" 
@@ -980,9 +1034,38 @@ const App: React.FC = () => {
                 </div>
             )}
         </div>
-        <p className="text-[10px] text-gray-400 mt-1 ml-1">
-            * ใส่ URL ของรูปภาพเพื่อเปลี่ยนโลโก้ที่มุมซ้ายบน (บันทึกอัตโนมัติ)
-        </p>
+        
+        {/* Name & Branch Input */}
+        <div className="flex flex-col md:flex-row gap-3">
+             <div className="flex-1 space-y-1">
+                <label className="text-xs text-gray-500 ml-1">ชื่อร้าน (Store Name)</label>
+                <div className="relative">
+                    <input 
+                        type="text" 
+                        value={storeName}
+                        onChange={(e) => setStoreName(e.target.value)}
+                        onBlur={handleStoreInfoSave}
+                        className="w-full border border-gray-300 rounded-lg pl-8 pr-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                        placeholder="ชื่อร้าน..."
+                    />
+                    <Store size={14} className="absolute left-2.5 top-2.5 text-gray-400" />
+                </div>
+             </div>
+             <div className="flex-1 space-y-1">
+                <label className="text-xs text-gray-500 ml-1">สาขา (Branch)</label>
+                <div className="relative">
+                    <input 
+                        type="text" 
+                        value={branchName}
+                        onChange={(e) => setBranchName(e.target.value)}
+                        onBlur={handleStoreInfoSave}
+                        className="w-full border border-gray-300 rounded-lg pl-8 pr-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                        placeholder="เช่น สาขาใหญ่, สาขา 2..."
+                    />
+                    <MapPin size={14} className="absolute left-2.5 top-2.5 text-gray-400" />
+                </div>
+             </div>
+        </div>
       </div>
 
       {/* --- Section 1: Add New (Single Input) --- */}
@@ -1179,17 +1262,26 @@ const App: React.FC = () => {
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col md:flex-row">
       <aside className={`fixed inset-y-0 left-0 z-50 w-64 bg-white border-r border-gray-200 transform transition-transform duration-200 ease-in-out md:translate-x-0 md:relative ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'}`}>
-        <div className="h-16 flex items-center px-6 border-b border-gray-100 justify-between md:justify-start">
-          {logoUrl ? (
-            <div className="flex items-center gap-2">
-                <img src={logoUrl} alt="Store Logo" className="h-10 max-w-[180px] object-contain" />
-            </div>
-          ) : (
-            <div className="flex items-center gap-2 text-indigo-600 font-bold text-xl">
-                <LayoutDashboard />
-                <span>StoreViz</span>
-            </div>
-          )}
+        <div className="h-20 flex items-center px-6 border-b border-gray-100 justify-between md:justify-start">
+          <div className="flex items-center gap-3">
+             {logoUrl ? (
+                <img src={logoUrl} alt="Store Logo" className="h-12 w-auto max-w-[60px] object-contain rounded-md" />
+             ) : (
+                <div className="h-10 w-10 bg-indigo-100 rounded-lg flex items-center justify-center text-indigo-600">
+                    <LayoutDashboard size={24} />
+                </div>
+             )}
+             <div className="flex flex-col">
+                 <h1 className="font-bold text-gray-800 text-base leading-tight">
+                    {storeName || 'StoreViz'}
+                 </h1>
+                 {branchName && (
+                     <span className="text-xs text-gray-400 font-medium">
+                        {branchName}
+                     </span>
+                 )}
+             </div>
+          </div>
           <button onClick={() => setIsMobileMenuOpen(false)} className="md:hidden text-gray-500">
             <X size={24} />
           </button>
@@ -1233,11 +1325,17 @@ const App: React.FC = () => {
 
       <main className="flex-1 flex flex-col min-w-0 h-screen overflow-hidden">
         <header className="md:hidden h-16 bg-white border-b border-gray-200 flex items-center px-4 justify-between">
-           {logoUrl ? (
-                <img src={logoUrl} alt="Store Logo" className="h-8 max-w-[150px] object-contain" />
-           ) : (
-                <h1 className="font-bold text-gray-800">StoreViz</h1>
-           )}
+           <div className="flex items-center gap-2">
+                {logoUrl ? (
+                        <img src={logoUrl} alt="Store Logo" className="h-10 w-auto object-contain rounded-sm" />
+                ) : (
+                        <LayoutDashboard size={24} className="text-indigo-600" />
+                )}
+                <div className="flex flex-col">
+                     <span className="font-bold text-gray-800 text-sm">{storeName}</span>
+                     {branchName && <span className="text-[10px] text-gray-500 leading-none">{branchName}</span>}
+                </div>
+           </div>
            <button onClick={() => setIsMobileMenuOpen(true)} className="p-2 text-gray-600">
              <Menu size={24} />
            </button>

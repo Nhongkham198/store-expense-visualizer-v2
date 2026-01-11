@@ -57,6 +57,7 @@ const initFirebase = () => {
 // Key ที่ใช้เก็บข้อมูล
 const DB_KEY = 'store_viz_settings/sheet_urls';
 const LOGO_DB_KEY = 'store_viz_settings/logo_url';
+const INFO_DB_KEY = 'store_viz_settings/store_info';
 
 // Returns any because it might be string[] (old format) or SheetConfig[] (new format)
 export const getSheetUrlsFromFirebase = async (): Promise<any | null> => {
@@ -133,5 +134,42 @@ export const saveLogoUrlToFirebase = async (url: string): Promise<void> => {
     await set(ref(db, LOGO_DB_KEY), url);
   } catch (error) {
     console.error("Error saving logo to Firebase", error);
+  }
+};
+
+// --- NEW: Store Info Sync Functions (Name & Branch) ---
+
+export const getStoreInfoFromFirebase = async (): Promise<{name: string, branch: string} | null> => {
+  if (!app || !db) {
+      const success = initFirebase();
+      if (!success) return null;
+  }
+  if (!db) return null;
+
+  try {
+    const dbRef = ref(db);
+    const snapshot = await get(child(dbRef, INFO_DB_KEY));
+    if (snapshot.exists()) {
+      return snapshot.val();
+    } else {
+      return null;
+    }
+  } catch (error) {
+    console.error("Error getting store info from Firebase", error);
+    return null;
+  }
+};
+
+export const saveStoreInfoToFirebase = async (name: string, branch: string): Promise<void> => {
+  if (!app || !db) {
+      const success = initFirebase();
+      if (!success) return;
+  }
+  if (!db) return;
+
+  try {
+    await set(ref(db, INFO_DB_KEY), { name, branch });
+  } catch (error) {
+    console.error("Error saving store info to Firebase", error);
   }
 };
