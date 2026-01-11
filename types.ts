@@ -15,6 +15,18 @@ export interface Transaction {
   sourceName?: string; // Optional user-defined name for the sheet source
 }
 
+export interface InventoryItem {
+  id: string;
+  name: string;
+  pricePerUnit: number;
+  quantity: number;
+  unit: string;
+  date: string; // ISO string
+  totalPrice: number;
+  status?: 'normal' | 'expensive' | 'cheap'; // Analysis status
+  priceDiffPercent?: number; // How much it differs from average
+}
+
 export interface MonthlySummary {
   month: string;
   total: number;
@@ -28,5 +40,6 @@ export interface CategorySummary {
 export enum ViewMode {
   DASHBOARD = 'DASHBOARD',
   TRANSACTIONS = 'TRANSACTIONS',
-  IMPORT = 'IMPORT'
+  IMPORT = 'IMPORT',
+  INVENTORY = 'INVENTORY' // New Tab
 }

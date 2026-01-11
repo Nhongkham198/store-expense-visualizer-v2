@@ -2,7 +2,7 @@ import { initializeApp, getApps } from 'firebase/app';
 import type { FirebaseApp } from 'firebase/app';
 import { getDatabase, ref, set, get, child } from 'firebase/database';
 import type { Database } from 'firebase/database';
-import { SheetConfig } from '../types';
+import { SheetConfig, InventoryItem } from '../types';
 
 // =========================================================================
 // 🟢 Firebase Configuration
@@ -58,6 +58,8 @@ const initFirebase = () => {
 const DB_KEY = 'store_viz_settings/sheet_urls';
 const LOGO_DB_KEY = 'store_viz_settings/logo_url';
 const INFO_DB_KEY = 'store_viz_settings/store_info';
+const INVENTORY_DB_KEY = 'store_viz_settings/inventory';
+const UNITS_DB_KEY = 'store_viz_settings/units'; // New Key for Units
 
 // Returns any because it might be string[] (old format) or SheetConfig[] (new format)
 export const getSheetUrlsFromFirebase = async (): Promise<any | null> => {
@@ -172,4 +174,78 @@ export const saveStoreInfoToFirebase = async (name: string, branch: string): Pro
   } catch (error) {
     console.error("Error saving store info to Firebase", error);
   }
+};
+
+// --- NEW: Inventory Sync Functions ---
+
+export const getInventoryFromFirebase = async (): Promise<InventoryItem[] | null> => {
+  if (!app || !db) {
+      const success = initFirebase();
+      if (!success) return null;
+  }
+  if (!db) return null;
+
+  try {
+    const dbRef = ref(db);
+    const snapshot = await get(child(dbRef, INVENTORY_DB_KEY));
+    if (snapshot.exists()) {
+      return snapshot.val();
+    } else {
+      return null;
+    }
+  } catch (error) {
+    console.error("Error getting inventory from Firebase", error);
+    return null;
+  }
+};
+
+export const saveInventoryToFirebase = async (data: InventoryItem[]): Promise<void> => {
+  if (!app || !db) {
+      const success = initFirebase();
+      if (!success) return;
+  }
+  if (!db) return;
+
+  try {
+    await set(ref(db, INVENTORY_DB_KEY), data);
+  } catch (error) {
+    console.error("Error saving inventory to Firebase", error);
+  }
+};
+
+// --- NEW: Units Sync Functions ---
+
+export const getUnitsFromFirebase = async (): Promise<string[] | null> => {
+    if (!app || !db) {
+        const success = initFirebase();
+        if (!success) return null;
+    }
+    if (!db) return null;
+  
+    try {
+      const dbRef = ref(db);
+      const snapshot = await get(child(dbRef, UNITS_DB_KEY));
+      if (snapshot.exists()) {
+        return snapshot.val();
+      } else {
+        return null;
+      }
+    } catch (error) {
+      console.error("Error getting units from Firebase", error);
+      return null;
+    }
+};
+
+export const saveUnitsToFirebase = async (data: string[]): Promise<void> => {
+    if (!app || !db) {
+        const success = initFirebase();
+        if (!success) return;
+    }
+    if (!db) return;
+  
+    try {
+      await set(ref(db, UNITS_DB_KEY), data);
+    } catch (error) {
+      console.error("Error saving units to Firebase", error);
+    }
 };

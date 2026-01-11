@@ -8,9 +8,10 @@ import {
   Menu, X, RefreshCw, Database, Plus, Trash2, Link as LinkIcon, Cloud, CloudOff,
   Download, Upload, FileText, ChevronRight, ExternalLink, Filter, Search,
   ArrowDownWideNarrow, ArrowUpNarrowWide, Clock, Calendar, Image as ImageIcon,
-  Lock, Unlock, ChevronLeft, ChevronRight as ChevronRightIcon, Store, MapPin
+  Lock, Unlock, ChevronLeft, ChevronRight as ChevronRightIcon, Store, MapPin,
+  Package, AlertTriangle, TrendingDown, Eraser, Save
 } from 'lucide-react';
-import { Transaction, ViewMode, SheetConfig } from './types';
+import { Transaction, ViewMode, SheetConfig, InventoryItem } from './types';
 import { generateMockData } from './utils/mockData';
 import { fetchSheetData } from './services/sheetService';
 import { 
@@ -19,7 +20,11 @@ import {
   getLogoUrlFromFirebase, 
   saveLogoUrlToFirebase,
   getStoreInfoFromFirebase,
-  saveStoreInfoToFirebase
+  saveStoreInfoToFirebase,
+  getInventoryFromFirebase,
+  saveInventoryToFirebase,
+  getUnitsFromFirebase,
+  saveUnitsToFirebase
 } from './services/firebaseService';
 import { StatsCard } from './components/StatsCard';
 import { TransactionsTable } from './components/TransactionsTable';
@@ -37,6 +42,18 @@ const App: React.FC = () => {
   const [isUsingRealData, setIsUsingRealData] = useState(false);
   const [isFirebaseConnected, setIsFirebaseConnected] = useState(false);
   
+  // Inventory State
+  const [inventory, setInventory] = useState<InventoryItem[]>([]);
+  // Units State (with default values)
+  const [availableUnits, setAvailableUnits] = useState<string[]>(['กก.', 'กรัม', 'ขีด', 'แพ็ค', 'ถุง', 'ชิ้น', 'ลิตร', 'ขวด', 'กระป๋อง', 'กล่อง']);
+  
+  // Inventory Form State
+  const [invName, setInvName] = useState('');
+  const [invPrice, setInvPrice] = useState('');
+  const [invQty, setInvQty] = useState('');
+  const [invUnit, setInvUnit] = useState('กก.'); // Default selection
+  const [invDate, setInvDate] = useState(new Date().toISOString().slice(0, 10));
+
   // Filter State (Interactive Charts)
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [selectedSheetIndex, setSelectedSheetIndex] = useState<number | null>(null);
@@ -75,6 +92,7 @@ const App: React.FC = () => {
   
   // File input ref for import
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const inventoryFileInputRef = useRef<HTMLInputElement>(null); // NEW: For inventory restore
 
   // Helper to normalize data (Migration from string[] to SheetConfig[])
   const normalizeData = (data: any): SheetConfig[] => {
@@ -149,6 +167,18 @@ const App: React.FC = () => {
               setStoreName(parsed.name || 'StoreViz');
               setBranchName(parsed.branch || '');
           }
+      }
+      
+      // 4. Load Inventory
+      const remoteInventory = await getInventoryFromFirebase();
+      if (remoteInventory) {
+          setInventory(remoteInventory);
+      }
+
+      // 5. Load Custom Units
+      const remoteUnits = await getUnitsFromFirebase();
+      if (remoteUnits && Array.isArray(remoteUnits)) {
+          setAvailableUnits(remoteUnits);
       }
     };
     loadSettings();
@@ -283,6 +313,138 @@ const App: React.FC = () => {
     const newSheets = sheets.filter((_, i) => i !== index);
     const finalSheets = newSheets; // Allow empty
     handleConfigChange(finalSheets);
+  };
+  
+  // -- INVENTORY LOGIC --
+  const handleUnitChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+      const val = e.target.value;
+      if (val === 'ADD_NEW') {
+          const newUnit = window.prompt("ระบุชื่อหน่วยใหม่ (เช่น ตะกร้า, ลัง, ถาด):");
+          if (newUnit && newUnit.trim()) {
+              const trimmed = newUnit.trim();
+              if (!availableUnits.includes(trimmed)) {
+                  const updatedUnits = [...availableUnits, trimmed];
+                  setAvailableUnits(updatedUnits);
+                  saveUnitsToFirebase(updatedUnits);
+                  setInvUnit(trimmed); // Select the new unit
+              } else {
+                  setInvUnit(trimmed);
+              }
+          } else {
+              // User cancelled or empty
+              // setInvUnit(availableUnits[0]); // Don't change or reset
+          }
+      } else {
+          setInvUnit(val);
+      }
+  };
+
+  const handleClearForm = () => {
+      // NOTE: This only clears the input form state.
+      // It DOES NOT affect the `inventory` array (the history list).
+      setInvName('');
+      setInvPrice('');
+      setInvQty('');
+      // setInvUnit(availableUnits[0]); // Optional: reset unit or keep
+  };
+
+  const handleAddInventory = () => {
+      if (!invName || !invPrice || !invQty) {
+          alert("กรุณากรอกข้อมูลให้ครบถ้วน");
+          return;
+      }
+
+      const currentPrice = parseFloat(invPrice);
+      const quantity = parseFloat(invQty);
+      
+      // Smart Analysis: Compare with previous entries of same name
+      const historyItems = inventory.filter(item => item.name.toLowerCase().trim() === invName.toLowerCase().trim());
+      
+      let status: 'normal' | 'expensive' | 'cheap' = 'normal';
+      let priceDiffPercent = 0;
+
+      if (historyItems.length > 0) {
+          // Calculate average price history
+          const avgPrice = historyItems.reduce((sum, item) => sum + item.pricePerUnit, 0) / historyItems.length;
+          priceDiffPercent = ((currentPrice - avgPrice) / avgPrice) * 100;
+          
+          if (priceDiffPercent > 15) {
+              status = 'expensive';
+              alert(`⚠️ แจ้งเตือน: ราคา "${invName}" สูงกว่าปกติ ${priceDiffPercent.toFixed(1)}% (เฉลี่ย ฿${avgPrice.toFixed(2)})`);
+          } else if (priceDiffPercent < -15) {
+              status = 'cheap';
+          }
+      }
+
+      const newItem: InventoryItem = {
+          id: Date.now().toString(),
+          name: invName,
+          pricePerUnit: currentPrice,
+          quantity: quantity,
+          unit: invUnit || availableUnits[0],
+          date: invDate,
+          totalPrice: currentPrice * quantity,
+          status,
+          priceDiffPercent
+      };
+
+      const newInventory = [newItem, ...inventory];
+      setInventory(newInventory);
+      saveInventoryToFirebase(newInventory);
+
+      // Reset form (Keep date and unit for convenience)
+      setInvName('');
+      setInvPrice('');
+      setInvQty('');
+  };
+
+  const removeInventoryItem = (id: string) => {
+      if (window.confirm("คุณต้องการลบรายการนี้ใช่หรือไม่? (การกระทำนี้ไม่สามารถย้อนกลับได้)")) {
+          const newInventory = inventory.filter(item => item.id !== id);
+          setInventory(newInventory);
+          saveInventoryToFirebase(newInventory);
+      }
+  };
+
+  // --- NEW: Inventory Backup/Restore Logic ---
+  const handleExportInventory = () => {
+    const dataStr = JSON.stringify(inventory, null, 2);
+    const blob = new Blob([dataStr], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `inventory-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const handleImportInventory = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const result = e.target?.result;
+        if (typeof result === 'string') {
+          const parsed = JSON.parse(result);
+          if (Array.isArray(parsed)) {
+             if (window.confirm(`พบข้อมูลวัตถุดิบ ${parsed.length} รายการ ต้องการนำเข้าแทนที่ข้อมูลปัจจุบันหรือไม่?`)) {
+                setInventory(parsed);
+                saveInventoryToFirebase(parsed);
+                alert("นำเข้าข้อมูลสำเร็จ!");
+             }
+          } else {
+              alert("รูปแบบไฟล์ไม่ถูกต้อง (ต้องเป็น JSON Array)");
+          }
+        }
+      } catch (err) {
+        alert("เกิดข้อผิดพลาดในการอ่านไฟล์");
+      }
+    };
+    reader.readAsText(file);
+    if (inventoryFileInputRef.current) inventoryFileInputRef.current.value = '';
   };
 
   // Export Config to JSON file
@@ -937,6 +1099,188 @@ const App: React.FC = () => {
       </div>
     </div>
   );
+  
+  const renderInventoryTab = () => (
+      <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 w-full mx-auto">
+        <div className="text-center mb-6">
+          <div className="w-14 h-14 bg-indigo-100 rounded-full flex items-center justify-center mx-auto mb-3 text-indigo-600">
+            <Package size={28} />
+          </div>
+          <h3 className="text-xl font-bold text-gray-800">จัดการสต็อกวัตถุดิบ (Raw Materials)</h3>
+          <p className="text-gray-500 text-sm mt-1">บันทึกราคาและตรวจสอบความเปลี่ยนแปลง</p>
+        </div>
+
+        {/* Input Form */}
+        <div className="bg-gray-50 p-5 rounded-xl border border-indigo-100 mb-8 shadow-sm">
+           <h4 className="text-sm font-bold text-indigo-800 flex items-center gap-2 mb-3">
+             <Plus size={16} /> บันทึกการซื้อ (New Entry)
+           </h4>
+           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-3">
+               <div className="space-y-1 col-span-2 lg:col-span-2">
+                  <label className="text-xs text-gray-500 font-medium ml-1">ชื่อวัตถุดิบ</label>
+                  <input 
+                      type="text" 
+                      value={invName}
+                      onChange={(e) => setInvName(e.target.value)}
+                      className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white"
+                      placeholder="เช่น เนื้อหมู, ไข่ไก่..."
+                  />
+               </div>
+               <div className="space-y-1">
+                  <label className="text-xs text-gray-500 font-medium ml-1">ราคา/หน่วย</label>
+                  <input 
+                      type="number" 
+                      value={invPrice}
+                      onChange={(e) => setInvPrice(e.target.value)}
+                      className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white"
+                      placeholder="฿"
+                  />
+               </div>
+               <div className="space-y-1">
+                  <label className="text-xs text-gray-500 font-medium ml-1">จำนวน</label>
+                  <div className="flex gap-1">
+                      <input 
+                          type="number" 
+                          value={invQty}
+                          onChange={(e) => setInvQty(e.target.value)}
+                          className="flex-1 min-w-0 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white"
+                          placeholder="0"
+                      />
+                      {/* -- CHANGED: Unit Selection -- */}
+                      <select 
+                          value={invUnit}
+                          onChange={handleUnitChange}
+                          className="w-24 border border-gray-300 rounded-lg px-1 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white text-center cursor-pointer"
+                      >
+                          {availableUnits.map(u => (
+                              <option key={u} value={u}>{u}</option>
+                          ))}
+                          <option value="ADD_NEW" className="font-bold text-indigo-600 bg-indigo-50">
+                              + เพิ่มหน่วยใหม่
+                          </option>
+                      </select>
+                  </div>
+               </div>
+               <div className="space-y-1">
+                  <label className="text-xs text-gray-500 font-medium ml-1">วันที่</label>
+                  <input 
+                      type="date" 
+                      value={invDate}
+                      onChange={(e) => setInvDate(e.target.value)}
+                      className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white"
+                  />
+               </div>
+           </div>
+           
+           {/* -- CHANGED: Split Buttons into Clear and Save -- */}
+           <div className="flex gap-3 mt-4">
+               <button 
+                  onClick={handleClearForm}
+                  className="px-6 py-2 bg-white border border-gray-300 text-gray-600 rounded-lg font-medium hover:bg-gray-50 transition-colors flex items-center gap-2"
+                  title="ล้างข้อมูลในฟอร์ม"
+               >
+                  <Eraser size={16} /> ล้างค่า
+               </button>
+               <button 
+                  onClick={handleAddInventory}
+                  className="flex-1 bg-indigo-600 text-white py-2 rounded-lg font-bold hover:bg-indigo-700 transition-colors shadow-sm"
+               >
+                  บันทึกข้อมูล
+               </button>
+           </div>
+        </div>
+
+        {/* History Table */}
+        <div className="overflow-x-auto">
+            <h4 className="text-sm font-bold text-gray-700 mb-3 flex items-center justify-between">
+                <span>ประวัติการซื้อล่าสุด ({inventory.length})</span>
+                {/* --- NEW: Backup/Restore Buttons --- */}
+                <div className="flex gap-2">
+                    <button 
+                        onClick={handleExportInventory} 
+                        className="text-xs flex items-center gap-1 text-gray-500 hover:text-indigo-600 border border-gray-200 px-2 py-1 rounded-md bg-white shadow-sm transition-colors"
+                        title="ดาวน์โหลดไฟล์สำรองข้อมูล (.json)"
+                    >
+                        <Upload size={12} /> สำรองข้อมูล (Backup)
+                    </button>
+                    <button 
+                        onClick={() => inventoryFileInputRef.current?.click()} 
+                        className="text-xs flex items-center gap-1 text-gray-500 hover:text-indigo-600 border border-gray-200 px-2 py-1 rounded-md bg-white shadow-sm transition-colors"
+                        title="นำเข้าไฟล์สำรองข้อมูล"
+                    >
+                        <Download size={12} /> นำเข้า (Restore)
+                    </button>
+                    <input 
+                        type="file" 
+                        ref={inventoryFileInputRef} 
+                        className="hidden" 
+                        accept=".json" 
+                        onChange={handleImportInventory} 
+                    />
+                </div>
+            </h4>
+            <table className="w-full text-left border-collapse">
+                <thead>
+                    <tr className="bg-gray-50 text-gray-600 text-xs uppercase tracking-wider">
+                        <th className="px-4 py-3 rounded-l-lg">วันที่</th>
+                        <th className="px-4 py-3">รายการ</th>
+                        <th className="px-4 py-3 text-right">ราคา/หน่วย</th>
+                        <th className="px-4 py-3 text-center">จำนวน</th>
+                        <th className="px-4 py-3 text-right">รวม</th>
+                        <th className="px-4 py-3 text-center rounded-r-lg">สถานะราคา</th>
+                        <th className="px-2 py-3"></th>
+                    </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                    {inventory.map((item) => (
+                        <tr key={item.id} className="hover:bg-gray-50 transition-colors text-sm">
+                            <td className="px-4 py-3 text-gray-500 whitespace-nowrap">
+                                {new Date(item.date).toLocaleDateString('th-TH')}
+                            </td>
+                            <td className="px-4 py-3 font-medium text-gray-800">{item.name}</td>
+                            <td className="px-4 py-3 text-right">฿{item.pricePerUnit.toLocaleString()}</td>
+                            <td className="px-4 py-3 text-center">{item.quantity} {item.unit}</td>
+                            <td className="px-4 py-3 text-right font-semibold">฿{item.totalPrice.toLocaleString()}</td>
+                            <td className="px-4 py-3 text-center">
+                                {item.status === 'expensive' && (
+                                    <span className="inline-flex items-center gap-1 px-2 py-1 bg-red-100 text-red-700 rounded-full text-[10px] font-bold">
+                                        <AlertTriangle size={10} /> 
+                                        +{item.priceDiffPercent?.toFixed(0)}%
+                                    </span>
+                                )}
+                                {item.status === 'cheap' && (
+                                    <span className="inline-flex items-center gap-1 px-2 py-1 bg-green-100 text-green-700 rounded-full text-[10px] font-bold">
+                                        <TrendingDown size={10} />
+                                        {item.priceDiffPercent?.toFixed(0)}%
+                                    </span>
+                                )}
+                                {item.status === 'normal' && (
+                                    <span className="text-gray-400 text-[10px]">-</span>
+                                )}
+                            </td>
+                            <td className="px-2 py-3 text-right">
+                                <button 
+                                    onClick={() => removeInventoryItem(item.id)} 
+                                    className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-all"
+                                    title="ลบรายการนี้"
+                                >
+                                    <Trash2 size={16} />
+                                </button>
+                            </td>
+                        </tr>
+                    ))}
+                    {inventory.length === 0 && (
+                        <tr>
+                            <td colSpan={7} className="text-center py-8 text-gray-400 text-sm">
+                                ยังไม่มีข้อมูลวัตถุดิบ
+                            </td>
+                        </tr>
+                    )}
+                </tbody>
+            </table>
+        </div>
+      </div>
+  );
 
   const renderLoginScreen = () => (
     <div className="flex flex-col items-center justify-center h-[calc(100vh-160px)] animate-fade-in p-4">
@@ -1308,6 +1652,13 @@ const App: React.FC = () => {
             <FileSpreadsheet size={18} />
             จัดการข้อมูล (Data Source)
           </button>
+           <button 
+            onClick={() => { setActiveTab(ViewMode.INVENTORY); setIsMobileMenuOpen(false); }}
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-colors ${activeTab === ViewMode.INVENTORY ? 'bg-indigo-50 text-indigo-700' : 'text-gray-600 hover:bg-gray-50'}`}
+          >
+            <Package size={18} />
+            วัตถุดิบ (Raw Materials)
+          </button>
         </nav>
         
         <div className="absolute bottom-0 left-0 w-full p-6 border-t border-gray-100">
@@ -1349,6 +1700,7 @@ const App: React.FC = () => {
                   {activeTab === ViewMode.DASHBOARD && 'วิเคราะห์ค่าใช้จ่ายร้าน (Store Overview)'}
                   {activeTab === ViewMode.TRANSACTIONS && 'บันทึกรายจ่ายรวม (Transactions)'}
                   {activeTab === ViewMode.IMPORT && 'จัดการลิงก์ข้อมูล (Data Source)'}
+                  {activeTab === ViewMode.INVENTORY && 'คลังวัตถุดิบ (Inventory)'}
                 </h1>
                 <p className="text-gray-500 mt-1">
                   {isUsingRealData 
@@ -1356,7 +1708,7 @@ const App: React.FC = () => {
                     : 'ข้อมูลจำลอง (Demo Mode)'}
                 </p>
               </div>
-              {activeTab !== ViewMode.IMPORT && (
+              {activeTab !== ViewMode.IMPORT && activeTab !== ViewMode.INVENTORY && (
                 <button 
                   onClick={handleSync}
                   className="px-4 py-2 bg-white border border-gray-200 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors flex items-center gap-2 shadow-sm self-start md:self-auto"
@@ -1375,6 +1727,10 @@ const App: React.FC = () => {
 
             {activeTab === ViewMode.IMPORT && (
                 isAuthenticated ? renderImportTab() : renderLoginScreen()
+            )}
+            
+            {activeTab === ViewMode.INVENTORY && (
+                isAuthenticated ? renderInventoryTab() : renderLoginScreen()
             )}
           </div>
         </div>
