@@ -46,6 +46,7 @@ const App: React.FC = () => {
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
   // Units State (with default values)
   const [availableUnits, setAvailableUnits] = useState<string[]>(['กก.', 'กรัม', 'ขีด', 'แพ็ค', 'ถุง', 'ชิ้น', 'ลิตร', 'ขวด', 'กระป๋อง', 'กล่อง']);
+  const [inventorySearchTerm, setInventorySearchTerm] = useState(''); // NEW: Inventory Search
   
   // Inventory Form State
   const [invName, setInvName] = useState('');
@@ -404,6 +405,45 @@ const App: React.FC = () => {
           setInventory(newInventory);
           saveInventoryToFirebase(newInventory);
       }
+  };
+
+  // --- NEW: Refresh Analysis Logic ---
+  const handleRefreshAnalysis = () => {
+    if (inventory.length === 0) return;
+    
+    // 1. Calculate stats per item name (Group by Name)
+    const statsMap = new Map<string, { total: number, count: number }>();
+    
+    inventory.forEach(item => {
+        const key = item.name.trim().toLowerCase();
+        const current = statsMap.get(key) || { total: 0, count: 0 };
+        statsMap.set(key, { total: current.total + item.pricePerUnit, count: current.count + 1 });
+    });
+
+    // 2. Update items with new averages
+    const updatedInventory = inventory.map(item => {
+        const key = item.name.trim().toLowerCase();
+        const stats = statsMap.get(key);
+        
+        if (!stats || stats.count === 0) return item;
+
+        const avgPrice = stats.total / stats.count;
+        
+        let status: 'normal' | 'expensive' | 'cheap' = 'normal';
+        let priceDiffPercent = 0;
+
+        if (avgPrice > 0) {
+            priceDiffPercent = ((item.pricePerUnit - avgPrice) / avgPrice) * 100;
+            if (priceDiffPercent > 15) status = 'expensive';
+            else if (priceDiffPercent < -15) status = 'cheap';
+        }
+
+        return { ...item, status, priceDiffPercent };
+    });
+
+    setInventory(updatedInventory);
+    saveInventoryToFirebase(updatedInventory);
+    alert("รีเฟรชการวิเคราะห์ราคาเรียบร้อย (Prices Re-analyzed based on full history)");
   };
 
   // --- NEW: Inventory Backup/Restore Logic ---
@@ -1100,7 +1140,13 @@ const App: React.FC = () => {
     </div>
   );
   
-  const renderInventoryTab = () => (
+  const renderInventoryTab = () => {
+    // Filter Inventory based on Search Term
+    const filteredInventory = inventory.filter(item => 
+        item.name.toLowerCase().includes(inventorySearchTerm.toLowerCase())
+    );
+
+    return (
       <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 w-full mx-auto">
         <div className="text-center mb-6">
           <div className="w-14 h-14 bg-indigo-100 rounded-full flex items-center justify-center mx-auto mb-3 text-indigo-600">
@@ -1190,25 +1236,52 @@ const App: React.FC = () => {
            </div>
         </div>
 
-        {/* History Table */}
-        <div className="overflow-x-auto">
-            <h4 className="text-sm font-bold text-gray-700 mb-3 flex items-center justify-between">
-                <span>ประวัติการซื้อล่าสุด ({inventory.length})</span>
-                {/* --- NEW: Backup/Restore Buttons --- */}
+        {/* Search & Actions Bar */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4 pt-4 border-t border-gray-100">
+             <h4 className="text-sm font-bold text-gray-700 whitespace-nowrap">
+                ประวัติการซื้อล่าสุด ({filteredInventory.length})
+             </h4>
+             
+             <div className="flex flex-col sm:flex-row gap-3 w-full sm:w-auto">
+                <div className="relative w-full sm:w-64">
+                    <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                    <input 
+                        type="text"
+                        value={inventorySearchTerm}
+                        onChange={(e) => setInventorySearchTerm(e.target.value)}
+                        placeholder="ค้นหาชื่อวัตถุดิบ..."
+                        className="w-full pl-9 pr-8 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-shadow bg-white"
+                    />
+                    {inventorySearchTerm && (
+                        <button 
+                            onClick={() => setInventorySearchTerm('')}
+                            className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 p-1"
+                        >
+                            <X size={14} />
+                        </button>
+                    )}
+                </div>
                 <div className="flex gap-2">
                     <button 
+                        onClick={handleRefreshAnalysis}
+                        className="text-xs flex items-center gap-1 text-indigo-600 hover:text-indigo-800 border border-indigo-200 bg-indigo-50 px-3 py-2 rounded-md shadow-sm transition-colors whitespace-nowrap justify-center font-medium"
+                        title="คำนวณราคาเปรียบเทียบใหม่จากประวัติทั้งหมด"
+                    >
+                        <RefreshCw size={14} /> รีเฟรชราคา
+                    </button>
+                    <button 
                         onClick={handleExportInventory} 
-                        className="text-xs flex items-center gap-1 text-gray-500 hover:text-indigo-600 border border-gray-200 px-2 py-1 rounded-md bg-white shadow-sm transition-colors"
+                        className="text-xs flex items-center gap-1 text-gray-500 hover:text-indigo-600 border border-gray-200 px-3 py-2 rounded-md bg-white shadow-sm transition-colors whitespace-nowrap justify-center"
                         title="ดาวน์โหลดไฟล์สำรองข้อมูล (.json)"
                     >
-                        <Upload size={12} /> สำรองข้อมูล (Backup)
+                        <Upload size={14} /> Backup
                     </button>
                     <button 
                         onClick={() => inventoryFileInputRef.current?.click()} 
-                        className="text-xs flex items-center gap-1 text-gray-500 hover:text-indigo-600 border border-gray-200 px-2 py-1 rounded-md bg-white shadow-sm transition-colors"
+                        className="text-xs flex items-center gap-1 text-gray-500 hover:text-indigo-600 border border-gray-200 px-3 py-2 rounded-md bg-white shadow-sm transition-colors whitespace-nowrap justify-center"
                         title="นำเข้าไฟล์สำรองข้อมูล"
                     >
-                        <Download size={12} /> นำเข้า (Restore)
+                        <Download size={14} /> Restore
                     </button>
                     <input 
                         type="file" 
@@ -1218,7 +1291,11 @@ const App: React.FC = () => {
                         onChange={handleImportInventory} 
                     />
                 </div>
-            </h4>
+             </div>
+        </div>
+
+        {/* History Table */}
+        <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse">
                 <thead>
                     <tr className="bg-gray-50 text-gray-600 text-xs uppercase tracking-wider">
@@ -1232,7 +1309,7 @@ const App: React.FC = () => {
                     </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
-                    {inventory.map((item) => (
+                    {filteredInventory.map((item) => (
                         <tr key={item.id} className="hover:bg-gray-50 transition-colors text-sm">
                             <td className="px-4 py-3 text-gray-500 whitespace-nowrap">
                                 {new Date(item.date).toLocaleDateString('th-TH')}
@@ -1269,10 +1346,10 @@ const App: React.FC = () => {
                             </td>
                         </tr>
                     ))}
-                    {inventory.length === 0 && (
+                    {filteredInventory.length === 0 && (
                         <tr>
                             <td colSpan={7} className="text-center py-8 text-gray-400 text-sm">
-                                ยังไม่มีข้อมูลวัตถุดิบ
+                                {inventorySearchTerm ? "ไม่พบรายการที่ค้นหา" : "ยังไม่มีข้อมูลวัตถุดิบ"}
                             </td>
                         </tr>
                     )}
@@ -1280,7 +1357,8 @@ const App: React.FC = () => {
             </table>
         </div>
       </div>
-  );
+    );
+  };
 
   const renderLoginScreen = () => (
     <div className="flex flex-col items-center justify-center h-[calc(100vh-160px)] animate-fade-in p-4">
