@@ -47,6 +47,7 @@ const App: React.FC = () => {
   // Units State (with default values)
   const [availableUnits, setAvailableUnits] = useState<string[]>(['กก.', 'กรัม', 'ขีด', 'แพ็ค', 'ถุง', 'ชิ้น', 'ลิตร', 'ขวด', 'กระป๋อง', 'กล่อง']);
   const [inventorySearchTerm, setInventorySearchTerm] = useState(''); // NEW: Inventory Search
+  const [inventorySort, setInventorySort] = useState<'dateDesc' | 'dateAsc'>('dateDesc'); // NEW: Inventory Sort Order
   
   // Inventory Form State
   const [invName, setInvName] = useState('');
@@ -927,7 +928,7 @@ const App: React.FC = () => {
                 )}
                 {selectedDateKey && (
                     <span className="text-sm bg-orange-50 text-orange-700 px-2 py-0.5 rounded-md border border-orange-100">
-                        ช่วงเวลา: <b>{trendData.find(d => d.rawKey === selectedDateKey)?.date || 'Selected'}</b>
+                        ช่วงเวลา: <b>{trendData.find(d => d.rawKey === selectedDateKey)?.date || 'Selected'}`</b>
                     </span>
                 )}
              </div>
@@ -1141,10 +1142,21 @@ const App: React.FC = () => {
   );
   
   const renderInventoryTab = () => {
-    // Filter Inventory based on Search Term
-    const filteredInventory = inventory.filter(item => 
-        item.name.toLowerCase().includes(inventorySearchTerm.toLowerCase())
-    );
+    // Filter Inventory based on Search Term and Sort
+    const filteredInventory = inventory
+        .filter(item => item.name.toLowerCase().includes(inventorySearchTerm.toLowerCase()))
+        .sort((a, b) => {
+            const dateA = new Date(a.date).getTime();
+            const dateB = new Date(b.date).getTime();
+            
+            if (inventorySort === 'dateDesc') {
+                // Newest first (Descending)
+                return dateB - dateA;
+            } else {
+                // Oldest first (Ascending)
+                return dateA - dateB;
+            }
+        });
 
     return (
       <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 w-full mx-auto">
@@ -1262,6 +1274,16 @@ const App: React.FC = () => {
                     )}
                 </div>
                 <div className="flex gap-2">
+                    {/* NEW: Sort Button */}
+                    <button 
+                        onClick={() => setInventorySort(prev => prev === 'dateDesc' ? 'dateAsc' : 'dateDesc')}
+                        className="text-xs flex items-center gap-1 text-gray-600 hover:text-indigo-600 border border-gray-200 bg-white px-3 py-2 rounded-md shadow-sm transition-colors whitespace-nowrap justify-center font-medium"
+                        title={inventorySort === 'dateDesc' ? 'เรียงจากปัจจุบัน -> อดีต' : 'เรียงจากอดีต -> ปัจจุบัน'}
+                    >
+                        {inventorySort === 'dateDesc' ? <ArrowDownWideNarrow size={14} /> : <ArrowUpNarrowWide size={14} />}
+                        {inventorySort === 'dateDesc' ? 'ล่าสุด' : 'เก่าสุด'}
+                    </button>
+
                     <button 
                         onClick={handleRefreshAnalysis}
                         className="text-xs flex items-center gap-1 text-indigo-600 hover:text-indigo-800 border border-indigo-200 bg-indigo-50 px-3 py-2 rounded-md shadow-sm transition-colors whitespace-nowrap justify-center font-medium"
