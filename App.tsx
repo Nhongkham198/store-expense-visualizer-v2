@@ -9,7 +9,7 @@ import {
   Download, Upload, FileText, ChevronRight, ExternalLink, Filter, Search,
   ArrowDownWideNarrow, ArrowUpNarrowWide, Clock, Calendar, Image as ImageIcon,
   Lock, Unlock, ChevronLeft, ChevronRight as ChevronRightIcon, Store, MapPin,
-  Package, AlertTriangle, TrendingDown, Eraser, Save
+  Package, AlertTriangle, TrendingDown, Eraser, Save, Receipt, Check
 } from 'lucide-react';
 import { Transaction, ViewMode, SheetConfig, InventoryItem } from './types';
 import { generateMockData } from './utils/mockData';
@@ -51,10 +51,17 @@ const App: React.FC = () => {
   
   // Inventory Form State
   const [invName, setInvName] = useState('');
-  const [invPrice, setInvPrice] = useState('');
+  const [invPrice, setInvPrice] = useState(''); // Price Per Unit
+  const [invTotal, setInvTotal] = useState(''); // NEW: Total Price (for auto calc)
   const [invQty, setInvQty] = useState('');
   const [invUnit, setInvUnit] = useState('กก.'); // Default selection
   const [invDate, setInvDate] = useState(new Date().toISOString().slice(0, 10));
+
+  // Import Modal State
+  const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+  const [importSortOrder, setImportSortOrder] = useState<'newest' | 'oldest'>('newest'); // NEW: Sort for import modal
+  const [importFilterDate, setImportFilterDate] = useState(''); // NEW: Date filter for import modal
+  const [selectedImportIds, setSelectedImportIds] = useState<Set<string>>(new Set()); // NEW: Multi-select state
 
   // Filter State (Interactive Charts)
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
@@ -95,6 +102,7 @@ const App: React.FC = () => {
   // File input ref for import
   const fileInputRef = useRef<HTMLInputElement>(null);
   const inventoryFileInputRef = useRef<HTMLInputElement>(null); // NEW: For inventory restore
+  const importDateInputRef = useRef<HTMLInputElement>(null); // NEW: Ref for date filter input
 
   // Helper to normalize data (Migration from string[] to SheetConfig[])
   const normalizeData = (data: any): SheetConfig[] => {
@@ -243,19 +251,37 @@ const App: React.FC = () => {
     const sheetsToFetch = customSheets || sheets;
 
     try {
-      // Filter out empty strings
-      const validSheets = sheetsToFetch.filter(s => s.url.trim() !== '');
+      // Filter out empty strings AND keep original index
+      const validItems = sheetsToFetch
+        .map((s, i) => ({ ...s, originalIndex: i }))
+        .filter(s => s.url.trim() !== '');
       
-      if (validSheets.length === 0) {
+      if (validItems.length === 0) {
         setTransactions(generateMockData());
         setIsUsingRealData(false);
         setIsLoading(false);
         return;
       }
 
-      // Fetch all sheets in parallel, passing Name info
-      const promises = validSheets.map((sheet, index) => fetchSheetData(sheet.url, index, sheet.name));
-      const results = await Promise.all(promises);
+      // --- Batch Fetching to avoid 429 Too Many Requests ---
+      const results: Transaction[][] = [];
+      const BATCH_SIZE = 3; // Fetch 3 sheets at a time
+
+      for (let i = 0; i < validItems.length; i += BATCH_SIZE) {
+          const batch = validItems.slice(i, i + BATCH_SIZE);
+          
+          const batchPromises = batch.map(item => 
+              fetchSheetData(item.url, item.originalIndex, item.name)
+          );
+          
+          const batchResults = await Promise.all(batchPromises);
+          results.push(...batchResults);
+
+          // Add delay if there are more items to fetch
+          if (i + BATCH_SIZE < validItems.length) {
+              await new Promise(resolve => setTimeout(resolve, 1000)); // 1 second delay between batches
+          }
+      }
       
       // Flatten arrays
       const combinedData = results.flat();
@@ -342,22 +368,125 @@ const App: React.FC = () => {
   };
 
   const handleClearForm = () => {
-      // NOTE: This only clears the input form state.
-      // It DOES NOT affect the `inventory` array (the history list).
       setInvName('');
       setInvPrice('');
+      setInvTotal(''); // Clear total too
       setInvQty('');
       // setInvUnit(availableUnits[0]); // Optional: reset unit or keep
   };
 
+  // NEW: Import Logic
+  const handleImportTransaction = (tx: Transaction) => {
+      setInvName(tx.description || 'ไม่ระบุชื่อ');
+      // Set date to transaction date (YYYY-MM-DD)
+      setInvDate(tx.date.slice(0, 10));
+      // Set Total Price (invTotal)
+      setInvTotal(tx.amount.toString());
+      // Clear Qty and Unit Price (Let user fill Qty)
+      setInvQty('');
+      setInvPrice('');
+      
+      setIsImportModalOpen(false);
+  };
+
+  // NEW: Batch Import Logic
+  const toggleImportSelection = (id: string) => {
+      const newSet = new Set(selectedImportIds);
+      if (newSet.has(id)) {
+          newSet.delete(id);
+      } else {
+          newSet.add(id);
+      }
+      setSelectedImportIds(newSet);
+  };
+
+  const handleBatchImport = () => {
+      if (selectedImportIds.size === 0) return;
+      
+      const selectedTxs = transactions.filter(tx => selectedImportIds.has(tx.id));
+      const newItems: InventoryItem[] = [];
+
+      selectedTxs.forEach(tx => {
+          const newItem: InventoryItem = {
+              id: Date.now().toString() + Math.random().toString(36).substr(2, 5),
+              name: tx.description || 'ไม่ระบุชื่อ',
+              pricePerUnit: tx.amount, // Default assumptions
+              quantity: 1,
+              unit: availableUnits[0], 
+              date: tx.date.slice(0, 10),
+              totalPrice: tx.amount,
+              status: 'normal',
+              priceDiffPercent: 0
+          };
+          newItems.push(newItem);
+      });
+
+      const updatedInventory = [...newItems, ...inventory];
+      setInventory(updatedInventory);
+      saveInventoryToFirebase(updatedInventory);
+      
+      alert(`นำเข้า ${newItems.length} รายการเรียบร้อย (ตั้งค่าเริ่มต้น: จำนวน=1)`);
+      setSelectedImportIds(new Set());
+      setIsImportModalOpen(false);
+  };
+
+  // Smart Form Updaters for Bidirectional Calculation
+  const handleInvQtyChange = (val: string) => {
+      setInvQty(val);
+      const qty = parseFloat(val);
+      const total = parseFloat(invTotal);
+      const price = parseFloat(invPrice);
+
+      if (!isNaN(qty) && qty > 0) {
+          // If Total is present but Price is missing (Import Mode), calculate Price
+          if (total > 0 && (isNaN(price) || price === 0 || invPrice === '')) {
+              setInvPrice((total / qty).toFixed(2));
+          }
+          // If Price is present, update Total (Normal Mode)
+          else if (price > 0) {
+              setInvTotal((price * qty).toFixed(2));
+          }
+      }
+  };
+
+  const handleInvPriceChange = (val: string) => {
+      setInvPrice(val);
+      const price = parseFloat(val);
+      const qty = parseFloat(invQty);
+      if (!isNaN(price) && !isNaN(qty)) {
+          setInvTotal((price * qty).toFixed(2));
+      }
+  };
+
+  const handleInvTotalChange = (val: string) => {
+      setInvTotal(val);
+      const total = parseFloat(val);
+      const qty = parseFloat(invQty);
+      if (!isNaN(total) && !isNaN(qty) && qty > 0) {
+          setInvPrice((total / qty).toFixed(2));
+      }
+  };
+
   const handleAddInventory = () => {
-      if (!invName || !invPrice || !invQty) {
-          alert("กรุณากรอกข้อมูลให้ครบถ้วน");
+      // Allow saving if we have Name, Qty, and either Price/Unit OR Total
+      if (!invName || !invQty) {
+          alert("กรุณากรอกชื่อและจำนวน");
           return;
       }
 
-      const currentPrice = parseFloat(invPrice);
+      let currentPrice = parseFloat(invPrice);
       const quantity = parseFloat(invQty);
+      const currentTotal = parseFloat(invTotal);
+
+      // If Price/Unit is missing but Total is there, calculate it
+      if ((isNaN(currentPrice) || currentPrice === 0) && !isNaN(currentTotal) && quantity > 0) {
+          currentPrice = currentTotal / quantity;
+      }
+
+      if (isNaN(currentPrice) || currentPrice <= 0) {
+          alert("กรุณาระบุราคา หรือ ราคารวมให้ถูกต้อง");
+          return;
+      }
       
       // Smart Analysis: Compare with previous entries of same name
       const historyItems = inventory.filter(item => item.name.toLowerCase().trim() === invName.toLowerCase().trim());
@@ -385,7 +514,7 @@ const App: React.FC = () => {
           quantity: quantity,
           unit: invUnit || availableUnits[0],
           date: invDate,
-          totalPrice: currentPrice * quantity,
+          totalPrice: currentPrice * quantity, // Recalculate strict
           status,
           priceDiffPercent
       };
@@ -394,10 +523,8 @@ const App: React.FC = () => {
       setInventory(newInventory);
       saveInventoryToFirebase(newInventory);
 
-      // Reset form (Keep date and unit for convenience)
-      setInvName('');
-      setInvPrice('');
-      setInvQty('');
+      // Reset form
+      handleClearForm();
   };
 
   const removeInventoryItem = (id: string) => {
@@ -1173,7 +1300,173 @@ const App: React.FC = () => {
         });
 
     return (
-      <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 w-full mx-auto">
+      <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 w-full mx-auto relative">
+        {/* Import Modal */}
+        {isImportModalOpen && (
+            <div className="fixed inset-0 bg-black bg-opacity-50 z-[100] flex items-center justify-center p-4 animate-fade-in">
+                <div className="bg-white rounded-xl shadow-xl w-full max-w-2xl max-h-[80vh] flex flex-col">
+                    <div className="p-4 border-b border-gray-100 flex justify-between items-center bg-gray-50 rounded-t-xl">
+                        <div className="flex items-center gap-2 text-indigo-700">
+                             <Receipt size={20} />
+                             {/* CHANGED: Text updated */}
+                             <h3 className="font-bold">ดึงข้อมูลจากไฟล์ (Import from Data Source)</h3>
+                        </div>
+                        <button onClick={() => setIsImportModalOpen(false)} className="p-1 hover:bg-gray-200 rounded-full text-gray-500">
+                            <X size={20} />
+                        </button>
+                    </div>
+                    
+                    {/* CHANGED: Toolbar for Filtering and Sorting */}
+                    <div className="p-3 bg-blue-50 text-blue-800 text-xs border-b border-blue-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                        <div className="flex items-center gap-2">
+                             <List size={14} /> 
+                             <span className="font-semibold">แสดงรายการทั้งหมด (All Transactions)</span>
+                        </div>
+                        
+                        <div className="flex items-center gap-2">
+                             {/* Date Filter */}
+                             <div className="relative flex items-center">
+                                <Calendar 
+                                    size={14} 
+                                    className="absolute left-2 text-blue-400 cursor-pointer hover:text-blue-600 z-10"
+                                    onClick={() => {
+                                        try {
+                                            if (importDateInputRef.current) {
+                                                (importDateInputRef.current as any).showPicker();
+                                            }
+                                        } catch(e) {
+                                            importDateInputRef.current?.focus();
+                                        }
+                                    }} 
+                                />
+                                <input 
+                                    ref={importDateInputRef}
+                                    type="date"
+                                    value={importFilterDate}
+                                    onChange={(e) => setImportFilterDate(e.target.value)}
+                                    className="pl-7 pr-2 py-1.5 border border-blue-200 rounded-md text-xs text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-400 bg-white cursor-pointer"
+                                    onClick={(e) => {
+                                        try {
+                                            (e.target as any).showPicker();
+                                        } catch(e) {}
+                                    }}
+                                />
+                                {importFilterDate && (
+                                    <button 
+                                        onClick={() => setImportFilterDate('')}
+                                        className="ml-1 text-blue-400 hover:text-red-500"
+                                        title="ล้างตัวกรองวันที่"
+                                    >
+                                        <X size={14} />
+                                    </button>
+                                )}
+                             </div>
+                             
+                             {/* Sort Button */}
+                             <button 
+                                onClick={() => setImportSortOrder(prev => prev === 'newest' ? 'oldest' : 'newest')}
+                                className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-blue-200 text-blue-700 rounded-md hover:bg-blue-100 transition-colors"
+                                title={importSortOrder === 'newest' ? 'เรียงจาก ใหม่ -> เก่า' : 'เรียงจาก เก่า -> ใหม่'}
+                             >
+                                {importSortOrder === 'newest' ? <ArrowDownWideNarrow size={14} /> : <ArrowUpNarrowWide size={14} />}
+                                <span className="font-medium hidden sm:inline">{importSortOrder === 'newest' ? 'ล่าสุด' : 'เก่าสุด'}</span>
+                             </button>
+                        </div>
+                    </div>
+
+                    <div className="flex-1 overflow-y-auto p-2 space-y-2">
+                        {transactions
+                            // CHANGED: Filter by Date if selected
+                            .filter(tx => {
+                                if (importFilterDate) {
+                                    // tx.date is ISO string YYYY-MM-DD...
+                                    return tx.date.startsWith(importFilterDate);
+                                }
+                                return true;
+                            })
+                            // CHANGED: Sort based on state
+                            .sort((a, b) => {
+                                const timeA = new Date(a.date).getTime();
+                                const timeB = new Date(b.date).getTime();
+                                return importSortOrder === 'newest' ? timeB - timeA : timeA - timeB;
+                            })
+                            .map((tx) => (
+                                <div 
+                                    key={tx.id} 
+                                    onClick={() => toggleImportSelection(tx.id)}
+                                    className={`p-3 border rounded-lg transition-colors flex justify-between items-center group cursor-pointer ${
+                                        selectedImportIds.has(tx.id) 
+                                        ? 'bg-indigo-50 border-indigo-300' 
+                                        : 'border-gray-100 hover:bg-gray-50'
+                                    }`}
+                                >
+                                    <div className="flex-1 min-w-0 pr-4">
+                                        <div className="flex items-center gap-2 mb-1">
+                                            <span className="text-xs font-bold text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded">{tx.displayDate}</span>
+                                            {/* ADDED: Source Name Display */}
+                                            {tx.sourceName && (
+                                                <span className="text-xs text-gray-500 bg-gray-50 px-1.5 py-0.5 rounded border border-gray-200 truncate max-w-[100px]" title={tx.sourceName}>
+                                                    {tx.sourceName}
+                                                </span>
+                                            )}
+                                            <span className="text-xs text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded border border-indigo-100 truncate max-w-[150px]">{tx.category}</span>
+                                        </div>
+                                        <div className="font-medium text-gray-800 truncate" title={tx.description}>
+                                            {tx.description}
+                                        </div>
+                                    </div>
+                                    <div className="text-right flex flex-col items-end gap-1">
+                                        <span className="font-bold text-gray-800">฿{tx.amount.toLocaleString()}</span>
+                                        <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                                            <button 
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    handleImportTransaction(tx);
+                                                }}
+                                                className="px-3 py-1.5 bg-white border border-indigo-200 text-indigo-600 text-xs font-bold rounded-md hover:bg-indigo-50 transition-all shadow-sm"
+                                            >
+                                                เลือก
+                                            </button>
+                                            <div 
+                                                className={`w-6 h-6 rounded border flex items-center justify-center transition-colors cursor-pointer ${
+                                                    selectedImportIds.has(tx.id) 
+                                                    ? 'bg-indigo-600 border-indigo-600' 
+                                                    : 'bg-white border-gray-300 hover:border-indigo-400'
+                                                }`}
+                                                onClick={() => toggleImportSelection(tx.id)}
+                                            >
+                                                {selectedImportIds.has(tx.id) && <Check size={14} className="text-white" />}
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            ))
+                        }
+                        {transactions.filter(tx => !importFilterDate || tx.date.startsWith(importFilterDate)).length === 0 && (
+                            <div className="p-8 text-center text-gray-400">
+                                {importFilterDate ? "ไม่พบรายการในวันที่เลือก" : "ไม่พบข้อมูลรายการใน Data Source"}
+                            </div>
+                        )}
+                    </div>
+
+                    {/* Footer for Batch Import */}
+                    {selectedImportIds.size > 0 && (
+                        <div className="p-4 border-t border-gray-100 bg-gray-50 rounded-b-xl flex justify-between items-center animate-fade-in">
+                            <span className="text-sm font-semibold text-indigo-800">
+                                เลือกแล้ว {selectedImportIds.size} รายการ
+                            </span>
+                            <button 
+                                onClick={handleBatchImport}
+                                className="px-6 py-2 bg-indigo-600 text-white rounded-lg font-bold hover:bg-indigo-700 shadow-md transition-transform active:scale-95 flex items-center gap-2"
+                            >
+                                <Download size={16} /> นำเข้า ({selectedImportIds.size})
+                            </button>
+                        </div>
+                    )}
+                </div>
+            </div>
+        )}
+
         <div className="text-center mb-6">
           <div className="w-14 h-14 bg-indigo-100 rounded-full flex items-center justify-center mx-auto mb-3 text-indigo-600">
             <Package size={28} />
@@ -1183,11 +1476,21 @@ const App: React.FC = () => {
         </div>
 
         {/* Input Form */}
-        <div className="bg-gray-50 p-5 rounded-xl border border-indigo-100 mb-8 shadow-sm">
-           <h4 className="text-sm font-bold text-indigo-800 flex items-center gap-2 mb-3">
-             <Plus size={16} /> บันทึกการซื้อ (New Entry)
-           </h4>
+        <div className="bg-gray-50 p-5 rounded-xl border border-indigo-100 mb-8 shadow-sm relative overflow-hidden">
+           <div className="flex justify-between items-start mb-3">
+               <h4 className="text-sm font-bold text-indigo-800 flex items-center gap-2">
+                    <Plus size={16} /> บันทึกการซื้อ (New Entry)
+               </h4>
+               <button 
+                   onClick={() => setIsImportModalOpen(true)}
+                   className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-indigo-200 text-indigo-700 rounded-lg text-xs font-bold hover:bg-indigo-50 hover:border-indigo-300 transition-all shadow-sm"
+               >
+                   <Receipt size={14} /> ดึงข้อมูลจากไฟล์ (Import)
+               </button>
+           </div>
+           
            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-3">
+               {/* Name */}
                <div className="space-y-1 col-span-2 lg:col-span-2">
                   <label className="text-xs text-gray-500 font-medium ml-1">ชื่อวัตถุดิบ</label>
                   <input 
@@ -1198,53 +1501,73 @@ const App: React.FC = () => {
                       placeholder="เช่น เนื้อหมู, ไข่ไก่..."
                   />
                </div>
+
+               {/* Quantity */}
                <div className="space-y-1">
-                  <label className="text-xs text-gray-500 font-medium ml-1">ราคา/หน่วย</label>
-                  <input 
-                      type="number" 
-                      value={invPrice}
-                      onChange={(e) => setInvPrice(e.target.value)}
-                      className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white"
-                      placeholder="฿"
-                  />
-               </div>
-               <div className="space-y-1">
-                  <label className="text-xs text-gray-500 font-medium ml-1">จำนวน</label>
+                  <label className="text-xs text-gray-500 font-medium ml-1">จำนวน (Qty)</label>
                   <div className="flex gap-1">
                       <input 
                           type="number" 
                           value={invQty}
-                          onChange={(e) => setInvQty(e.target.value)}
+                          onChange={(e) => handleInvQtyChange(e.target.value)}
                           className="flex-1 min-w-0 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white"
                           placeholder="0"
                       />
-                      {/* -- CHANGED: Unit Selection -- */}
                       <select 
                           value={invUnit}
                           onChange={handleUnitChange}
-                          className="w-24 border border-gray-300 rounded-lg px-1 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white text-center cursor-pointer"
+                          className="w-20 border border-gray-300 rounded-lg px-1 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white text-center cursor-pointer"
                       >
                           {availableUnits.map(u => (
                               <option key={u} value={u}>{u}</option>
                           ))}
                           <option value="ADD_NEW" className="font-bold text-indigo-600 bg-indigo-50">
-                              + เพิ่มหน่วยใหม่
+                              +
                           </option>
                       </select>
                   </div>
                </div>
+               
+               {/* NEW: Total Price */}
                <div className="space-y-1">
-                  <label className="text-xs text-gray-500 font-medium ml-1">วันที่</label>
+                  <label className="text-xs text-gray-500 font-medium ml-1 flex items-center justify-between">
+                     ราคารวม (Total)
+                     {invTotal && invQty && parseFloat(invQty) > 0 && (
+                         <span className="text-[10px] text-green-600 font-normal">Auto-calc</span>
+                     )}
+                  </label>
                   <input 
-                      type="date" 
-                      value={invDate}
-                      onChange={(e) => setInvDate(e.target.value)}
-                      className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white"
+                      type="number" 
+                      value={invTotal}
+                      onChange={(e) => handleInvTotalChange(e.target.value)}
+                      className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white font-medium text-gray-800"
+                      placeholder="฿ รวม"
+                  />
+               </div>
+
+               {/* Unit Price (Auto Calc) */}
+               <div className="space-y-1">
+                  <label className="text-xs text-gray-500 font-medium ml-1">ราคา/หน่วย</label>
+                  <input 
+                      type="number" 
+                      value={invPrice}
+                      onChange={(e) => handleInvPriceChange(e.target.value)}
+                      className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-gray-50 text-gray-600"
+                      placeholder="฿/หน่วย"
                   />
                </div>
            </div>
            
-           {/* -- CHANGED: Split Buttons into Clear and Save -- */}
+           <div className="mt-3">
+               <label className="text-xs text-gray-500 font-medium ml-1">วันที่</label>
+                <input 
+                    type="date" 
+                    value={invDate}
+                    onChange={(e) => setInvDate(e.target.value)}
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white"
+                />
+           </div>
+           
            <div className="flex gap-3 mt-4">
                <button 
                   onClick={handleClearForm}
