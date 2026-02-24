@@ -9,7 +9,7 @@ import {
   Download, Upload, FileText, ChevronRight, ExternalLink, Filter, Search,
   ArrowDownWideNarrow, ArrowUpNarrowWide, Clock, Calendar, Image as ImageIcon,
   Lock, Unlock, ChevronLeft, ChevronRight as ChevronRightIcon, Store, MapPin,
-  Package, AlertTriangle, TrendingDown, Eraser, Save, Receipt, Check
+  Package, AlertTriangle, TrendingDown, Eraser, Save, Receipt, Check, Edit
 } from 'lucide-react';
 import { Transaction, ViewMode, SheetConfig, InventoryItem } from './types';
 import { generateMockData } from './utils/mockData';
@@ -60,6 +60,11 @@ const App: React.FC = () => {
   const [inventorySearchTerm, setInventorySearchTerm] = useState(''); // NEW: Inventory Search
   const [inventorySort, setInventorySort] = useState<'dateDesc' | 'dateAsc'>('dateDesc'); // NEW: Inventory Sort Order
   
+  // -- NEW: Single Item Edit State --
+  const [selectedInventoryId, setSelectedInventoryId] = useState<string | null>(null);
+  const [editingInventoryId, setEditingInventoryId] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState<InventoryItem | null>(null);
+
   // Inventory Single Form State (Manual Entry)
   const [invName, setInvName] = useState('');
   const [invPrice, setInvPrice] = useState(''); 
@@ -634,6 +639,74 @@ const App: React.FC = () => {
           setInventory(newInventory);
           saveInventoryToFirebase(newInventory);
       }
+  };
+
+  // --- NEW: Single Item Edit Logic ---
+  const handleCheckboxSelect = (id: string) => {
+      // Allow only one selection at a time as per requirement
+      if (selectedInventoryId === id) {
+          setSelectedInventoryId(null);
+          // If unchecking the currently edited item, cancel edit
+          if (editingInventoryId === id) {
+              handleCancelEdit();
+          }
+      } else {
+          setSelectedInventoryId(id);
+          // If selecting a different item while editing, cancel previous edit
+          if (editingInventoryId) {
+              handleCancelEdit();
+          }
+      }
+  };
+
+  const handleStartEdit = () => {
+      if (!selectedInventoryId) return;
+      
+      const itemToEdit = inventory.find(i => i.id === selectedInventoryId);
+      if (itemToEdit) {
+          setEditingInventoryId(selectedInventoryId);
+          setEditForm({ ...itemToEdit });
+      }
+  };
+
+  const handleCancelEdit = () => {
+      setEditingInventoryId(null);
+      setEditForm(null);
+  };
+
+  const handleSaveEdit = () => {
+      if (!editForm || !editingInventoryId) return;
+
+      // Validate
+      if (!editForm.name || editForm.quantity <= 0 || editForm.pricePerUnit <= 0) {
+          alert("กรุณากรอกข้อมูลให้ครบถ้วนและถูกต้อง");
+          return;
+      }
+
+      // Recalculate Total
+      const updatedItem = {
+          ...editForm,
+          totalPrice: editForm.pricePerUnit * editForm.quantity
+      };
+
+      // Update Inventory State
+      const newInventory = inventory.map(item => 
+          item.id === editingInventoryId ? updatedItem : item
+      );
+      
+      setInventory(newInventory);
+      saveInventoryToFirebase(newInventory);
+      
+      // Reset Edit State
+      setEditingInventoryId(null);
+      setEditForm(null);
+      // Keep selection or clear it? "When finished editing, show Save button" -> implies we might stay selected.
+      // But typically after save, we exit edit mode.
+  };
+
+  const handleEditFormChange = (field: keyof InventoryItem, value: any) => {
+      if (!editForm) return;
+      setEditForm({ ...editForm, [field]: value });
   };
 
   // --- NEW: Refresh Analysis Logic ---
@@ -1811,6 +1884,29 @@ const App: React.FC = () => {
              </h4>
              
              <div className="flex flex-col sm:flex-row gap-3 w-full sm:w-auto">
+                {/* NEW: Edit Button */}
+                <button 
+                    onClick={() => {
+                        if (editingInventoryId) {
+                            handleSaveEdit();
+                        } else {
+                            if (!selectedInventoryId) {
+                                alert("กรุณาเลือกรายการที่ต้องการแก้ไขก่อน");
+                                return;
+                            }
+                            handleStartEdit();
+                        }
+                    }}
+                    disabled={!selectedInventoryId && !editingInventoryId}
+                    className={`text-xs flex items-center gap-1 border px-3 py-2 rounded-md shadow-sm transition-colors whitespace-nowrap justify-center font-bold ${
+                        editingInventoryId 
+                        ? 'bg-green-600 text-white border-green-600 hover:bg-green-700' 
+                        : 'text-indigo-600 hover:text-indigo-800 border-indigo-200 bg-white disabled:opacity-50 disabled:cursor-not-allowed'
+                    }`}
+                >
+                    {editingInventoryId ? <Save size={14} /> : <Edit size={14} />} 
+                    {editingInventoryId ? 'บันทึก' : 'แก้ไขข้อมูล'}
+                </button>
                 <div className="relative w-full sm:w-64">
                     <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
                     <input 
@@ -1877,7 +1973,10 @@ const App: React.FC = () => {
             <table className="w-full text-left border-collapse">
                 <thead>
                     <tr className="bg-gray-50 text-gray-600 text-xs uppercase tracking-wider">
-                        <th className="px-4 py-3 rounded-l-lg">วันที่</th>
+                        <th className="px-4 py-3 rounded-l-lg w-10">
+                            {/* Checkbox Header (Optional: Select All logic could go here, but requirement says 1 item) */}
+                        </th>
+                        <th className="px-4 py-3">วันที่</th>
                         <th className="px-4 py-3">รายการ</th>
                         <th className="px-4 py-3 text-right">ราคา/หน่วย</th>
                         <th className="px-4 py-3 text-center">จำนวน</th>
@@ -1887,46 +1986,128 @@ const App: React.FC = () => {
                     </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
-                    {filteredInventory.map((item) => (
-                        <tr key={item.id} className="hover:bg-gray-50 transition-colors text-sm">
-                            <td className="px-4 py-3 text-gray-500 whitespace-nowrap">
-                                {new Date(item.date).toLocaleDateString('th-TH')}
-                            </td>
-                            <td className="px-4 py-3 font-medium text-gray-800">{item.name}</td>
-                            <td className="px-4 py-3 text-right">฿{item.pricePerUnit.toLocaleString()}</td>
-                            <td className="px-4 py-3 text-center">{item.quantity} {item.unit}</td>
-                            <td className="px-4 py-3 text-right font-semibold">฿{item.totalPrice.toLocaleString()}</td>
+                    {filteredInventory.map((item) => {
+                        const isEditing = editingInventoryId === item.id;
+                        const isSelected = selectedInventoryId === item.id;
+
+                        return (
+                        <tr key={item.id} className={`transition-colors text-sm ${isSelected ? 'bg-indigo-50' : 'hover:bg-gray-50'}`}>
                             <td className="px-4 py-3 text-center">
-                                {item.status === 'expensive' && (
-                                    <span className="inline-flex items-center gap-1 px-2 py-1 bg-red-100 text-red-700 rounded-full text-[10px] font-bold">
-                                        <AlertTriangle size={10} /> 
-                                        +{item.priceDiffPercent?.toFixed(0)}%
-                                    </span>
-                                )}
-                                {item.status === 'cheap' && (
-                                    <span className="inline-flex items-center gap-1 px-2 py-1 bg-green-100 text-green-700 rounded-full text-[10px] font-bold">
-                                        <TrendingDown size={10} />
-                                        {item.priceDiffPercent?.toFixed(0)}%
-                                    </span>
-                                )}
-                                {item.status === 'normal' && (
-                                    <span className="text-gray-400 text-[10px]">-</span>
-                                )}
+                                <input 
+                                    type="checkbox" 
+                                    checked={isSelected} 
+                                    onChange={() => handleCheckboxSelect(item.id)}
+                                    disabled={editingInventoryId !== null && !isEditing} // Disable others while editing
+                                    className="w-4 h-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500 cursor-pointer"
+                                />
                             </td>
+                            
+                            {isEditing && editForm ? (
+                                // --- EDIT MODE ---
+                                <>
+                                    <td className="px-4 py-3">
+                                        <input 
+                                            type="date" 
+                                            value={editForm.date}
+                                            onChange={(e) => handleEditFormChange('date', e.target.value)}
+                                            className="w-full border border-gray-300 rounded px-2 py-1 text-xs"
+                                        />
+                                    </td>
+                                    <td className="px-4 py-3">
+                                        <input 
+                                            type="text" 
+                                            value={editForm.name}
+                                            onChange={(e) => handleEditFormChange('name', e.target.value)}
+                                            className="w-full border border-gray-300 rounded px-2 py-1 text-xs"
+                                        />
+                                    </td>
+                                    <td className="px-4 py-3 text-right">
+                                        <input 
+                                            type="number" 
+                                            value={editForm.pricePerUnit}
+                                            onChange={(e) => handleEditFormChange('pricePerUnit', parseFloat(e.target.value))}
+                                            className="w-24 border border-gray-300 rounded px-2 py-1 text-xs text-right ml-auto"
+                                        />
+                                    </td>
+                                    <td className="px-4 py-3 text-center flex items-center justify-center gap-1">
+                                        <input 
+                                            type="number" 
+                                            value={editForm.quantity}
+                                            onChange={(e) => handleEditFormChange('quantity', parseFloat(e.target.value))}
+                                            className="w-16 border border-gray-300 rounded px-2 py-1 text-xs text-center"
+                                        />
+                                        <select 
+                                            value={editForm.unit}
+                                            onChange={(e) => handleEditFormChange('unit', e.target.value)}
+                                            className="border border-gray-300 rounded px-1 py-1 text-xs"
+                                        >
+                                            {availableUnits.map(u => <option key={u} value={u}>{u}</option>)}
+                                        </select>
+                                    </td>
+                                    <td className="px-4 py-3 text-right font-semibold text-gray-500">
+                                        {/* Auto Calc Total Preview */}
+                                        ฿{(editForm.pricePerUnit * editForm.quantity).toLocaleString()}
+                                    </td>
+                                    <td className="px-4 py-3 text-center">
+                                        <span className="text-xs text-indigo-600 font-bold">Editing...</span>
+                                    </td>
+                                </>
+                            ) : (
+                                // --- VIEW MODE ---
+                                <>
+                                    <td className="px-4 py-3 text-gray-500 whitespace-nowrap">
+                                        {new Date(item.date).toLocaleDateString('th-TH')}
+                                    </td>
+                                    <td className="px-4 py-3 font-medium text-gray-800">{item.name}</td>
+                                    <td className="px-4 py-3 text-right">฿{item.pricePerUnit.toLocaleString()}</td>
+                                    <td className="px-4 py-3 text-center">{item.quantity} {item.unit}</td>
+                                    <td className="px-4 py-3 text-right font-semibold">฿{item.totalPrice.toLocaleString()}</td>
+                                    <td className="px-4 py-3 text-center">
+                                        {item.status === 'expensive' && (
+                                            <span className="inline-flex items-center gap-1 px-2 py-1 bg-red-100 text-red-700 rounded-full text-[10px] font-bold">
+                                                <AlertTriangle size={10} /> 
+                                                +{item.priceDiffPercent?.toFixed(0)}%
+                                            </span>
+                                        )}
+                                        {item.status === 'cheap' && (
+                                            <span className="inline-flex items-center gap-1 px-2 py-1 bg-green-100 text-green-700 rounded-full text-[10px] font-bold">
+                                                <TrendingDown size={10} />
+                                                {item.priceDiffPercent?.toFixed(0)}%
+                                            </span>
+                                        )}
+                                        {item.status === 'normal' && (
+                                            <span className="text-gray-400 text-[10px]">-</span>
+                                        )}
+                                    </td>
+                                </>
+                            )}
+                            
                             <td className="px-2 py-3 text-right">
-                                <button 
-                                    onClick={() => removeInventoryItem(item.id)} 
-                                    className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-all"
-                                    title="ลบรายการนี้"
-                                >
-                                    <Trash2 size={16} />
-                                </button>
+                                {isEditing ? (
+                                    <button 
+                                        onClick={handleCancelEdit}
+                                        className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-all"
+                                        title="ยกเลิก"
+                                    >
+                                        <X size={16} />
+                                    </button>
+                                ) : (
+                                    <button 
+                                        onClick={() => removeInventoryItem(item.id)} 
+                                        className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-all"
+                                        title="ลบรายการนี้"
+                                        disabled={editingInventoryId !== null} // Disable delete while editing another
+                                    >
+                                        <Trash2 size={16} />
+                                    </button>
+                                )}
                             </td>
                         </tr>
-                    ))}
+                        );
+                    })}
                     {filteredInventory.length === 0 && (
                         <tr>
-                            <td colSpan={7} className="text-center py-8 text-gray-400 text-sm">
+                            <td colSpan={8} className="text-center py-8 text-gray-400 text-sm">
                                 {inventorySearchTerm ? "ไม่พบรายการที่ค้นหา" : "ยังไม่มีข้อมูลวัตถุดิบ"}
                             </td>
                         </tr>
