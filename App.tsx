@@ -65,6 +65,10 @@ const App: React.FC = () => {
   const [editingInventoryId, setEditingInventoryId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<InventoryItem | null>(null);
 
+  // NEW: Date Range Filter State
+  const [startDate, setStartDate] = useState<string>('');
+  const [endDate, setEndDate] = useState<string>('');
+
   // Inventory Single Form State (Manual Entry)
   const [invName, setInvName] = useState('');
   const [invPrice, setInvPrice] = useState(''); 
@@ -897,18 +901,34 @@ const App: React.FC = () => {
     return tx;
   }, [transactions, selectedSheetIndex]);
 
-  // 2. Transactions Filtered by Time (For Pie Chart)
+  // 2. Transactions Filtered by Time (For Pie Chart & Total Stats)
   // Pie Chart needs to know "What is the category breakdown for THIS selected month?"
+  // NOW: Also respects the manual Date Range Picker
   const timeFilteredTransactions = useMemo(() => {
-      if (!selectedDateKey) return sheetFilteredTransactions;
+      let tx = sheetFilteredTransactions;
 
-      return sheetFilteredTransactions.filter(t => {
-          const dateObj = new Date(t.date);
-          if (isNaN(dateObj.getTime())) return false;
-          const key = getDateKey(dateObj, trendView);
-          return key === selectedDateKey;
-      });
-  }, [sheetFilteredTransactions, selectedDateKey, trendView]);
+      // 1. Apply Date Range Filter
+      if (startDate) {
+          const start = new Date(startDate).setHours(0, 0, 0, 0);
+          tx = tx.filter(t => new Date(t.date).getTime() >= start);
+      }
+      if (endDate) {
+          const end = new Date(endDate).setHours(23, 59, 59, 999);
+          tx = tx.filter(t => new Date(t.date).getTime() <= end);
+      }
+
+      // 2. Apply Selected Bar Filter (Drill-down)
+      if (selectedDateKey) {
+          tx = tx.filter(t => {
+              const dateObj = new Date(t.date);
+              if (isNaN(dateObj.getTime())) return false;
+              const key = getDateKey(dateObj, trendView);
+              return key === selectedDateKey;
+          });
+      }
+      
+      return tx;
+  }, [sheetFilteredTransactions, selectedDateKey, trendView, startDate, endDate]);
 
   // 3. Fully Filtered Transactions (For List & Stats)
   // This is the most specific data: Selected Sheet + Selected Time + Selected Category
@@ -994,9 +1014,19 @@ const App: React.FC = () => {
   // We DO NOT filter by Date here, because we want to see ALL bars to click on them.
   const trendData = useMemo(() => {
     // If a category is selected, we only show trend for that category.
-    const sourceTransactions = selectedCategory 
+    let sourceTransactions = selectedCategory 
         ? sheetFilteredTransactions.filter(t => (t.category || 'อื่นๆ') === selectedCategory)
         : sheetFilteredTransactions;
+
+    // NEW: Filter by Date Range
+    if (startDate) {
+        const start = new Date(startDate).setHours(0, 0, 0, 0);
+        sourceTransactions = sourceTransactions.filter(t => new Date(t.date).getTime() >= start);
+    }
+    if (endDate) {
+        const end = new Date(endDate).setHours(23, 59, 59, 999);
+        sourceTransactions = sourceTransactions.filter(t => new Date(t.date).getTime() <= end);
+    }
 
     // Map key -> { date, amount, sortKey, rawKey }
     const summary = new Map<string, { date: string, amount: number, sortKey: number, rawKey: string }>();
@@ -1045,7 +1075,7 @@ const App: React.FC = () => {
     return Array.from(summary.values())
         .sort((a, b) => a.sortKey - b.sortKey);
 
-  }, [sheetFilteredTransactions, selectedCategory, trendView]);
+  }, [sheetFilteredTransactions, selectedCategory, trendView, startDate, endDate]);
 
   const topCategory = categoryData.length > 0 ? categoryData[0] : { name: '-', value: 0 };
 
@@ -1295,25 +1325,53 @@ const App: React.FC = () => {
                 </p>
              </div>
 
-             <div className="flex bg-gray-100 p-1 rounded-lg">
-                <button 
-                  onClick={() => handleTrendViewChange('daily')}
-                  className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${trendView === 'daily' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
-                >
-                  วัน
-                </button>
-                <button 
-                  onClick={() => handleTrendViewChange('monthly')}
-                  className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${trendView === 'monthly' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
-                >
-                  เดือน
-                </button>
-                <button 
-                  onClick={() => handleTrendViewChange('yearly')}
-                  className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${trendView === 'yearly' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
-                >
-                  ปี
-                </button>
+             <div className="flex flex-col items-end gap-2">
+                 <div className="flex bg-gray-100 p-1 rounded-lg">
+                    <button 
+                      onClick={() => handleTrendViewChange('daily')}
+                      className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${trendView === 'daily' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+                    >
+                      วัน
+                    </button>
+                    <button 
+                      onClick={() => handleTrendViewChange('monthly')}
+                      className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${trendView === 'monthly' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+                    >
+                      เดือน
+                    </button>
+                    <button 
+                      onClick={() => handleTrendViewChange('yearly')}
+                      className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${trendView === 'yearly' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+                    >
+                      ปี
+                    </button>
+                 </div>
+
+                 {/* NEW: Date Range Inputs */}
+                 <div className="flex items-center gap-1 bg-white border border-gray-200 rounded-md p-1 shadow-sm">
+                    <input 
+                        type="date" 
+                        value={startDate}
+                        onChange={(e) => setStartDate(e.target.value)}
+                        className="text-[10px] border-none focus:ring-0 p-0 text-gray-600 w-24 outline-none"
+                    />
+                    <span className="text-gray-400 text-[10px]">-</span>
+                    <input 
+                        type="date" 
+                        value={endDate}
+                        onChange={(e) => setEndDate(e.target.value)}
+                        className="text-[10px] border-none focus:ring-0 p-0 text-gray-600 w-24 outline-none"
+                    />
+                    {(startDate || endDate) && (
+                        <button 
+                            onClick={() => { setStartDate(''); setEndDate(''); }}
+                            className="text-gray-400 hover:text-red-500 ml-1"
+                            title="ล้างช่วงเวลา"
+                        >
+                            <X size={12} />
+                        </button>
+                    )}
+                 </div>
              </div>
           </div>
           <div className="h-72">
