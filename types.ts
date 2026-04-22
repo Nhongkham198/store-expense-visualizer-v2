@@ -23,6 +23,7 @@ export interface InventoryItem {
   unit: string;
   date: string; // ISO string
   totalPrice: number;
+  remark?: string; // NEW: User remarks or notes
   status?: 'normal' | 'expensive' | 'cheap'; // Analysis status
   priceDiffPercent?: number; // How much it differs from average
 }

@@ -41,16 +41,32 @@ interface PendingItem {
   price: string; // Price per unit
   total: string; // Total Price
   date: string;
+  remark: string; // NEW
 }
 
 const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<ViewMode>(ViewMode.DASHBOARD);
   
   // Data State
-  const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [transactions, setTransactions] = useState<Transaction[]>(() => {
+      // Check cache for instant load
+      try {
+          const cached = localStorage.getItem('storeViz_transactions_cache');
+          if (cached) return JSON.parse(cached);
+      } catch (e) {
+          console.warn("Failed to load transactions from cache", e);
+      }
+      return [];
+  });
+  const [lastCacheTime, setLastCacheTime] = useState<number | null>(() => {
+      const saved = localStorage.getItem('storeViz_cache_time');
+      return saved ? parseInt(saved, 10) : null;
+  });
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [isUsingRealData, setIsUsingRealData] = useState(false);
+  const [isUsingRealData, setIsUsingRealData] = useState(() => {
+      return localStorage.getItem('storeViz_transactions_cache') !== null;
+  });
   const [isFirebaseConnected, setIsFirebaseConnected] = useState(false);
   
   // Inventory State
@@ -76,6 +92,7 @@ const App: React.FC = () => {
   const [invQty, setInvQty] = useState('');
   const [invUnit, setInvUnit] = useState('กก.'); 
   const [invDate, setInvDate] = useState(new Date().toISOString().slice(0, 10));
+  const [invRemark, setInvRemark] = useState(''); // NEW
 
   // Import Modal State
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
@@ -157,7 +174,9 @@ const App: React.FC = () => {
         if (normalized.length > 0) {
             setSheets(normalized);
             setIsFirebaseConnected(true);
-            loadData(normalized);
+            if (transactions.length === 0) {
+                loadData(normalized, false);
+            }
         }
       } else {
         // Fallback to local storage for sheets
@@ -167,11 +186,15 @@ const App: React.FC = () => {
                 const parsed = JSON.parse(savedLocal);
                 const normalized = normalizeData(parsed);
                 setSheets(normalized);
-                loadData(normalized);
+                if (transactions.length === 0) {
+                    loadData(normalized, false);
+                }
             } catch(e) {}
         } else {
             // Initial Load with default
-            loadData();
+            if (transactions.length === 0) {
+                loadData();
+            }
         }
       }
       
@@ -268,7 +291,8 @@ const App: React.FC = () => {
       }
   };
 
-  const loadData = async (customSheets?: SheetConfig[]) => {
+  const loadData = async (customSheets?: SheetConfig[], isManualRefresh: boolean = true) => {
+    // If not manual refresh and we have data, we can Skip/Defer (but we already handled this in useEffect)
     setIsLoading(true);
     setError(null);
     const sheetsToFetch = customSheets || sheets;
@@ -280,6 +304,7 @@ const App: React.FC = () => {
         .filter(s => s.url.trim() !== '');
       
       if (validItems.length === 0) {
+        if (!isManualRefresh) return; // Don't wipe cache with mock data on auto-load
         setTransactions(generateMockData());
         setIsUsingRealData(false);
         setIsLoading(false);
@@ -288,7 +313,7 @@ const App: React.FC = () => {
 
       // --- Batch Fetching to avoid 429 Too Many Requests ---
       const results: Transaction[][] = [];
-      const BATCH_SIZE = 3; // Fetch 3 sheets at a time
+      const BATCH_SIZE = 2; // Fetch 2 sheets at a time (Even safer for 55+ sheets)
 
       for (let i = 0; i < validItems.length; i += BATCH_SIZE) {
           const batch = validItems.slice(i, i + BATCH_SIZE);
@@ -302,7 +327,7 @@ const App: React.FC = () => {
 
           // Add delay if there are more items to fetch
           if (i + BATCH_SIZE < validItems.length) {
-              await new Promise(resolve => setTimeout(resolve, 1000)); // 1 second delay between batches
+              await new Promise(resolve => setTimeout(resolve, 1500)); // 1.5 second delay
           }
       }
       
@@ -315,23 +340,40 @@ const App: React.FC = () => {
         
         setTransactions(combinedData);
         setIsUsingRealData(true);
+        
+        // --- Cache the results ---
+        try {
+            localStorage.setItem('storeViz_transactions_cache', JSON.stringify(combinedData));
+            const now = Date.now();
+            localStorage.setItem('storeViz_cache_time', now.toString());
+            setLastCacheTime(now);
+        } catch(e) {
+            console.warn("Storage limit exceeded, cache might be incomplete", e);
+        }
       } else {
-        setTransactions(generateMockData());
-        setIsUsingRealData(false);
-        setError("เชื่อมต่อได้แต่ไม่พบข้อมูลในลิงก์ที่ระบุ (แสดงข้อมูลตัวอย่างแทน)");
+        // IMPORTANT: If we had URLs but got zero data, DON'T show mock data.
+        // Show empty state so user knows their sheets are being read but are empty or failing.
+        setTransactions([]);
+        setIsUsingRealData(true); // Technically using real (empty) data
+        setError("เชื่อมต่อสำเร็จแต่ไม่พบข้อมูลรายการในลิงก์ที่ระบุ (ตรวจสอบว่าแชร์เป็น 'ทุกคนที่มีลิงก์อ่านได้')");
       }
     } catch (err) {
       console.error("Fetch failed", err);
-      setTransactions(generateMockData());
-      setIsUsingRealData(false);
-      setError("เกิดข้อผิดพลาดในการดึงข้อมูล (แสดงข้อมูลตัวอย่างแทน)");
+      // Only fallback to mock data if we have absolutely nothing (no cache, no real data)
+      if (transactions.length === 0) {
+          setTransactions(generateMockData());
+          setIsUsingRealData(false);
+          setError("เกิดข้อผิดพลาดในการดึงข้อมูล (แสดงข้อมูลตัวอย่างแทน)");
+      } else {
+          setError("รีเฟรชข้อมูลไม่สำเร็จ กำลังแสดงข้อมูลล่าสุดที่มีอยู่");
+      }
     } finally {
       setIsLoading(false);
     }
   };
 
   const handleSync = () => {
-    loadData(sheets);
+    loadData(sheets, true);
   };
 
   const addNewSheet = () => {
@@ -395,6 +437,7 @@ const App: React.FC = () => {
       setInvPrice('');
       setInvTotal(''); 
       setInvQty('');
+      setInvRemark(''); // NEW
   };
 
   // NEW: Import Logic - Single Selection (Legacy support)
@@ -402,6 +445,7 @@ const App: React.FC = () => {
       setInvName(tx.description || 'ไม่ระบุชื่อ');
       setInvDate(tx.date.slice(0, 10)); // YYYY-MM-DD
       setInvTotal(tx.amount.toString());
+      setInvRemark(''); // Clear remark on new import
       setInvQty(''); // User must verify qty
       setInvPrice(''); // Recalculated based on qty
       setIsImportModalOpen(false);
@@ -432,7 +476,8 @@ const App: React.FC = () => {
               unit: availableUnits[0],
               total: tx.amount.toString(),
               price: '', // Will be calc from Total / Qty
-              date: tx.date.slice(0, 10)
+              date: tx.date.slice(0, 10),
+              remark: '' // NEW
           }));
           setPendingItems(newPendingItems);
           // alert(`นำเข้า ${newPendingItems.length} รายการสำหรับแก้ไข`);
@@ -526,6 +571,7 @@ const App: React.FC = () => {
               pricePerUnit: finalPrice,
               totalPrice: finalTotal,
               date: p.date,
+              remark: p.remark, // NEW
               status,
               priceDiffPercent
           });
@@ -625,6 +671,7 @@ const App: React.FC = () => {
           quantity: quantity,
           unit: invUnit || availableUnits[0],
           date: invDate,
+          remark: invRemark, // NEW
           totalPrice: currentPrice * quantity, 
           status,
           priceDiffPercent
@@ -1801,6 +1848,17 @@ const App: React.FC = () => {
                                         className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm text-gray-500 bg-gray-50 focus:ring-1 focus:ring-indigo-500 outline-none"
                                     />
                                 </div>
+                                
+                                {/* Remark */}
+                                <div className="md:col-span-12 mt-1 px-1">
+                                    <input 
+                                        type="text" 
+                                        value={item.remark}
+                                        onChange={(e) => updatePendingItem(idx, 'remark', e.target.value)}
+                                        placeholder="หมายเหตุเพิ่มเติม..."
+                                        className="w-full text-xs text-gray-500 italic bg-transparent border-b border-gray-100 hover:border-indigo-200 outline-none transition-colors py-0.5"
+                                    />
+                                </div>
                             </div>
                         </div>
                     ))}
@@ -1838,7 +1896,7 @@ const App: React.FC = () => {
                 </button>
             </div>
             
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-3">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-3">
                 {/* Name */}
                 <div className="space-y-1 col-span-2 lg:col-span-2">
                     <label className="text-xs text-gray-500 font-medium ml-1">ชื่อวัตถุดิบ</label>
@@ -1903,6 +1961,18 @@ const App: React.FC = () => {
                         onChange={(e) => handleInvPriceChange(e.target.value)}
                         className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-gray-50 text-gray-600"
                         placeholder="฿/หน่วย"
+                    />
+                </div>
+
+                {/* Remark */}
+                <div className="space-y-1">
+                    <label className="text-xs text-gray-500 font-medium ml-1">หมายเหตุ</label>
+                    <input 
+                        type="text" 
+                        value={invRemark}
+                        onChange={(e) => setInvRemark(e.target.value)}
+                        className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white"
+                        placeholder="บันทึกเพิ่มเติม..."
                     />
                 </div>
             </div>
@@ -2039,6 +2109,7 @@ const App: React.FC = () => {
                         <th className="px-4 py-3 text-right">ราคา/หน่วย</th>
                         <th className="px-4 py-3 text-center">จำนวน</th>
                         <th className="px-4 py-3 text-right">รวม</th>
+                        <th className="px-4 py-3 text-center">หมายเหตุ</th>
                         <th className="px-4 py-3 text-center rounded-r-lg">สถานะราคา</th>
                         <th className="px-2 py-3"></th>
                     </tr>
@@ -2106,6 +2177,15 @@ const App: React.FC = () => {
                                         {/* Auto Calc Total Preview */}
                                         ฿{(editForm.pricePerUnit * editForm.quantity).toLocaleString()}
                                     </td>
+                                    <td className="px-4 py-3">
+                                        <input 
+                                            type="text" 
+                                            value={editForm.remark || ''}
+                                            onChange={(e) => handleEditFormChange('remark', e.target.value)}
+                                            placeholder="..."
+                                            className="w-full border border-gray-300 rounded px-2 py-1 text-xs"
+                                        />
+                                    </td>
                                     <td className="px-4 py-3 text-center">
                                         <span className="text-xs text-indigo-600 font-bold">Editing...</span>
                                     </td>
@@ -2120,6 +2200,9 @@ const App: React.FC = () => {
                                     <td className="px-4 py-3 text-right">฿{item.pricePerUnit.toLocaleString()}</td>
                                     <td className="px-4 py-3 text-center">{item.quantity} {item.unit}</td>
                                     <td className="px-4 py-3 text-right font-semibold">฿{item.totalPrice.toLocaleString()}</td>
+                                    <td className="px-4 py-3 text-center text-gray-500 text-xs italic">
+                                        {item.remark || '-'}
+                                    </td>
                                     <td className="px-4 py-3 text-center">
                                         {item.status === 'expensive' && (
                                             <span className="inline-flex items-center gap-1 px-2 py-1 bg-red-100 text-red-700 rounded-full text-[10px] font-bold">
@@ -2597,10 +2680,21 @@ const App: React.FC = () => {
                   {activeTab === ViewMode.IMPORT && 'จัดการลิงก์ข้อมูล (Data Source)'}
                   {activeTab === ViewMode.INVENTORY && 'คลังวัตถุดิบ (Inventory)'}
                 </h1>
-                <p className="text-gray-500 mt-1">
+                <p className="text-gray-500 mt-1 flex items-center gap-2 flex-wrap text-xs md:text-sm">
                   {isUsingRealData 
-                    ? `รวมข้อมูลจริงจาก ${sheets.filter(s=>s.url).length} แผ่นงาน (${transactions.length} รายการ)` 
+                    ? `รวมข้อมูลจาก ${sheets.filter(s=>s.url).length} แผ่นงาน (${transactions.length} รายการ)` 
                     : 'ข้อมูลจำลอง (Demo Mode)'}
+                  {isUsingRealData && lastCacheTime && (
+                    <span className="text-[10px] bg-green-50 text-green-600 px-2 py-0.5 rounded-full font-medium border border-green-100 flex items-center gap-1">
+                        <span className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></span>
+                        ข้อมูลล่าสุดเมื่อ: {new Date(lastCacheTime).toLocaleString('th-TH', { 
+                            hour: '2-digit', 
+                            minute: '2-digit',
+                            day: '2-digit',
+                            month: '2-digit'
+                        })}
+                    </span>
+                  )}
                 </p>
               </div>
               {activeTab !== ViewMode.IMPORT && activeTab !== ViewMode.INVENTORY && (
