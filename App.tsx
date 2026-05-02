@@ -1859,17 +1859,6 @@ const App: React.FC = () => {
                                         className="w-full text-xs text-gray-500 italic bg-transparent border-b border-gray-100 hover:border-indigo-200 outline-none transition-colors py-0.5"
                                     />
                                 </div>
-                                
-                                {/* Remark */}
-                                <div className="md:col-span-12 mt-1 px-1">
-                                    <input 
-                                        type="text" 
-                                        value={item.remark}
-                                        onChange={(e) => updatePendingItem(idx, 'remark', e.target.value)}
-                                        placeholder="หมายเหตุเพิ่มเติม..."
-                                        className="w-full text-xs text-gray-500 italic bg-transparent border-b border-gray-100 hover:border-indigo-200 outline-none transition-colors py-0.5"
-                                    />
-                                </div>
                             </div>
                         </div>
                     ))}
