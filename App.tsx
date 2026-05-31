@@ -1562,6 +1562,133 @@ const App: React.FC = () => {
   );
   
   const renderInventoryTab = () => {
+    // 1. Group ALL inventory items by their trimmed, lowercase name to get complete purchasing intervals
+    const itemsByName = new Map<string, typeof inventory>();
+    inventory.forEach(item => {
+        const key = item.name.trim().toLowerCase();
+        if (!itemsByName.has(key)) {
+            itemsByName.set(key, []);
+        }
+        itemsByName.get(key)!.push(item);
+    });
+
+    // 2. For each group, sort by date ascending and calculate average interval and track indices of sorted items
+    const groupAnalysis = new Map<string, {
+        averageIntervalDays: number;
+        sortedIds: string[];
+    }>();
+
+    itemsByName.forEach((items, nameKey) => {
+        // Sort ascending to find consecutive purchases
+        const sorted = [...items].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+        
+        let totalDiffDays = 0;
+        let intervalCount = 0;
+        
+        for (let i = 1; i < sorted.length; i++) {
+            const datePrev = new Date(sorted[i-1].date);
+            const dateCurr = new Date(sorted[i].date);
+            const diffTime = dateCurr.getTime() - datePrev.getTime();
+            const diffDays = diffTime / (1000 * 60 * 60 * 24);
+            if (diffDays >= 0) {
+                totalDiffDays += diffDays;
+                intervalCount++;
+            }
+        }
+        
+        const avg = intervalCount > 0 ? (totalDiffDays / intervalCount) : 0;
+        
+        groupAnalysis.set(nameKey, {
+            averageIntervalDays: avg,
+            sortedIds: sorted.map(x => x.id)
+        });
+    });
+
+    const renderNextOrderInfo = (item: InventoryItem) => {
+        const key = item.name.trim().toLowerCase();
+        const analysis = groupAnalysis.get(key);
+        if (!analysis || analysis.averageIntervalDays <= 0) {
+            return (
+                <div className="flex flex-col items-center justify-center">
+                    <span className="text-gray-400 text-xs">-</span>
+                    <span className="inline-flex px-1.5 py-0.5 bg-gray-50 text-gray-400 rounded text-[9px] font-medium border border-gray-100 mt-0.5">
+                        ประวัติไม่พอ
+                    </span>
+                </div>
+            );
+        }
+
+        const avgInterval = analysis.averageIntervalDays;
+        const itemDate = new Date(item.date);
+        
+        // Expected next order date for this specific record
+        const nextDate = new Date(itemDate.getTime() + avgInterval * 24 * 60 * 60 * 1000);
+        const nextDateStr = nextDate.toLocaleDateString('th-TH', { day: 'numeric', month: 'numeric', year: 'numeric' });
+        
+        // Find if this is the absolute latest purchase of this item name
+        const isLatest = analysis.sortedIds[analysis.sortedIds.length - 1] === item.id;
+        
+        if (!isLatest) {
+            // It has been subsequent-ordered already
+            return (
+                <div className="flex flex-col items-center justify-center">
+                    <span className="text-gray-400 text-xs line-through" title="เลยกำหนดแล้วและสั่งครั้งใหม่แล้ว">{nextDateStr}</span>
+                    <span className="inline-flex px-1.5 py-0.5 bg-blue-50 text-blue-500 rounded text-[9px] font-bold border border-blue-100 mt-0.5">
+                        สั่งแล้ว
+                    </span>
+                </div>
+            );
+        }
+
+        // It is the latest! Check distance from today
+        const today = new Date();
+        today.setHours(0,0,0,0);
+        
+        const nextDateCompare = new Date(nextDate.getTime());
+        nextDateCompare.setHours(0,0,0,0);
+        
+        const diffMs = nextDateCompare.getTime() - today.getTime();
+        const daysRemaining = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+
+        if (daysRemaining < 0) {
+            return (
+                <div className="flex flex-col items-center justify-center gap-0.5">
+                    <span className="text-red-600 font-bold text-xs">{nextDateStr}</span>
+                    <span className="inline-flex items-center gap-0.5 px-2 py-0.5 bg-red-100 text-red-700 rounded-full text-[9px] font-bold animate-pulse border border-red-200">
+                        <AlertCircle size={8} /> ด่วนมาก (เกิน {Math.abs(daysRemaining)} วัน)
+                    </span>
+                </div>
+            );
+        } else if (daysRemaining === 0) {
+            return (
+                <div className="flex flex-col items-center justify-center gap-0.5">
+                    <span className="text-orange-600 font-bold text-xs">{nextDateStr}</span>
+                    <span className="inline-flex items-center gap-0.5 px-2 py-0.5 bg-orange-100 text-orange-700 rounded-full text-[9px] font-bold border border-orange-200">
+                        <Clock size={8} /> ด่วน (วันนี้)
+                    </span>
+                </div>
+            );
+        } else if (daysRemaining <= 3) {
+            return (
+                <div className="flex flex-col items-center justify-center gap-0.5">
+                    <span className="text-amber-600 font-bold text-xs">{nextDateStr}</span>
+                    <span className="inline-flex items-center gap-0.5 px-2 py-0.5 bg-amber-50 text-amber-600 rounded-full text-[9px] font-semibold border border-amber-200">
+                        <Clock size={8} /> ใกล้ถึงกำหนด ({daysRemaining} วัน)
+                    </span>
+                </div>
+            );
+        } else {
+            return (
+                <div className="flex flex-col items-center justify-center gap-0.5">
+                    <span className="text-gray-600 text-xs">{nextDateStr}</span>
+                    <span className="inline-flex items-center gap-0.5 px-2 py-0.5 bg-green-50 text-green-600 rounded-full text-[9px] font-semibold border border-green-200">
+                        <Check size={8} /> ปกติ (อีก {daysRemaining} วัน)
+                    </span>
+                </div>
+            );
+        }
+    };
+
     // Filter Inventory based on Search Term and Sort
     const filteredInventory = inventory
         .filter(item => item.name.toLowerCase().includes(inventorySearchTerm.toLowerCase()))
@@ -2110,6 +2237,7 @@ const App: React.FC = () => {
                         <th className="px-4 py-3 text-center">จำนวน</th>
                         <th className="px-4 py-3 text-right">รวม</th>
                         <th className="px-4 py-3 text-center">หมายเหตุ</th>
+                        <th className="px-4 py-3 text-center">คาดว่าสั่งอีกครั้ง</th>
                         <th className="px-4 py-3 text-center rounded-r-lg">สถานะราคา</th>
                         <th className="px-2 py-3"></th>
                     </tr>
@@ -2187,6 +2315,9 @@ const App: React.FC = () => {
                                         />
                                     </td>
                                     <td className="px-4 py-3 text-center">
+                                        <span className="text-gray-400 text-xs">-</span>
+                                    </td>
+                                    <td className="px-4 py-3 text-center">
                                         <span className="text-xs text-indigo-600 font-bold">Editing...</span>
                                     </td>
                                 </>
@@ -2202,6 +2333,9 @@ const App: React.FC = () => {
                                     <td className="px-4 py-3 text-right font-semibold">฿{item.totalPrice.toLocaleString()}</td>
                                     <td className="px-4 py-3 text-center text-gray-500 text-xs italic">
                                         {item.remark || '-'}
+                                    </td>
+                                    <td className="px-4 py-3 text-center">
+                                        {renderNextOrderInfo(item)}
                                     </td>
                                     <td className="px-4 py-3 text-center">
                                         {item.status === 'expensive' && (
