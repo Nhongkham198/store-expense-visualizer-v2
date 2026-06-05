@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, 
-  PieChart, Pie, Cell, Rectangle
+  PieChart, Pie, Cell, Rectangle, LineChart, Line, ReferenceLine
 } from 'recharts';
 import { 
   LayoutDashboard, List, FileSpreadsheet, Wallet, TrendingUp, AlertCircle, 
@@ -1867,6 +1867,61 @@ const App: React.FC = () => {
               .filter(item => item.name.trim().toLowerCase() === key)
               .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
+          // Calculate interval sequence from oldest to newest
+          const chronologicalList = [...historyList].reverse();
+          const intervalChartData = [];
+          
+          for (let i = 1; i < chronologicalList.length; i++) {
+              const itemPrev = chronologicalList[i - 1];
+              const itemCurr = chronologicalList[i];
+              const datePrev = new Date(itemPrev.date);
+              const dateCurr = new Date(itemCurr.date);
+              
+              datePrev.setHours(0,0,0,0);
+              dateCurr.setHours(0,0,0,0);
+              
+              const diffTime = dateCurr.getTime() - datePrev.getTime();
+              const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
+              
+              const formattedDate = new Date(itemCurr.date).toLocaleDateString('th-TH', { 
+                  day: 'numeric', 
+                  month: 'short' 
+              });
+              
+              if (diffDays >= 0) {
+                  intervalChartData.push({
+                      date: formattedDate,
+                      fullDate: new Date(itemCurr.date).toLocaleDateString('th-TH'),
+                      days: diffDays,
+                      orderInfo: `สั่งครั้งที่ ${i + 1} (${itemCurr.quantity} ${itemCurr.unit})`,
+                      prevDate: new Date(itemPrev.date).toLocaleDateString('th-TH')
+                  });
+              }
+          }
+
+          const intervalDays = intervalChartData.map(d => d.days);
+          const minInterval = intervalDays.length > 0 ? Math.min(...intervalDays) : 0;
+          const maxInterval = intervalDays.length > 0 ? Math.max(...intervalDays) : 0;
+          const lastInterval = intervalDays.length > 0 ? intervalDays[intervalDays.length - 1] : 0;
+          const avgInterval = groupAnalysis.get(key)?.averageIntervalDays || 0;
+
+          const CustomTooltipPrivate = ({ active, payload }: any) => {
+              if (active && payload && payload.length) {
+                  const data = payload[0].payload;
+                  return (
+                      <div className="bg-white p-3 rounded-xl border border-gray-150 shadow-lg text-xs">
+                          <p className="font-extrabold text-gray-900 mb-1">📅 {data.fullDate}</p>
+                          <p className="text-indigo-600 font-bold mb-1">⚡ รอบสั่งซื้อนี้: {payload[0].value} วัน</p>
+                          <p className="text-gray-500 font-medium">สั่งห่างจากครั้งก่อน ({data.prevDate})</p>
+                          <div className="mt-1 pb-1 border-t border-gray-100 text-[10px] text-gray-400">
+                             {data.orderInfo}
+                          </div>
+                      </div>
+                  );
+              }
+              return null;
+          };
+
           return (
               <div className="space-y-6">
                   <div className="flex items-center justify-between border-b border-gray-100 pb-4 mb-4">
@@ -1882,6 +1937,107 @@ const App: React.FC = () => {
                               ประวัติการซื้อวัตถุดิบ: {selectedDetailItemName}
                           </h2>
                       </div>
+                  </div>
+
+                  {/* Line Chart Container for purchase frequency */}
+                  <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 font-sans">
+                      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
+                          <div>
+                              <h3 className="text-base font-bold text-gray-800 flex items-center gap-2">
+                                  <span className="w-2.5 h-2.5 bg-indigo-500 rounded-full animate-pulse"></span>
+                                  วิเคราะห์ความถี่และรอบระยะเวลาสั่งซื้อแต่ละครั้ง (Interval Frequency Line Chart)
+                              </h3>
+                              <p className="text-xs text-gray-500 mt-1">กราฟแสดงจำนวนวันห่างกันของการสั่งซื้อแต่ละครั้ง ตัวเลขต่ำแปลว่าสั่งบ่อย ตัวเลขสูงแปลว่าสั่งห่างกัน</p>
+                          </div>
+                      </div>
+
+                      {intervalChartData.length === 0 ? (
+                          <div className="flex flex-col items-center justify-center p-8 bg-gray-50/50 border border-dashed border-gray-200 rounded-xl text-center min-h-[200px]">
+                              <p className="text-sm font-semibold text-gray-500">ประวัติการซื้อไม่เพียงพอสำหรับวิเคราะห์กราฟเส้นรอบความถี่</p>
+                              <p className="text-xs text-gray-400 mt-1">จำเป็นต้องมีประวัติการสั่งซื้อร่วมกันอย่างน้อย 2 ครั้งขึ้นไป เพื่อคำนวณและวิเคราะห์ระยะห่างระหว่างแต่ละรายการ</p>
+                          </div>
+                      ) : (
+                          <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+                              {/* Summary Cards */}
+                              <div className="flex flex-col gap-3 justify-center">
+                                  <div className="bg-indigo-50/45 border border-indigo-100/50 p-4 rounded-xl flex items-center justify-between">
+                                      <div>
+                                          <span className="text-[11px] text-gray-500 font-semibold block">รอบสั่งเฉลี่ย (Average Cycle)</span>
+                                          <span className="text-2xl font-bold text-indigo-700 font-mono mt-0.5 block">
+                                              {avgInterval > 0 ? `${avgInterval.toFixed(1)} วัน` : '-'}
+                                          </span>
+                                      </div>
+                                      <div className="p-2 bg-indigo-150 text-indigo-600 rounded-lg">
+                                          <Clock size={16} />
+                                      </div>
+                                  </div>
+
+                                  <div className="bg-emerald-50/45 border border-emerald-100/50 p-4 rounded-xl flex items-center justify-between">
+                                      <div>
+                                          <span className="text-[11px] text-gray-500 font-semibold block">รอบล่าสุด (Latest Cycle)</span>
+                                          <span className="text-2xl font-bold text-emerald-700 font-mono mt-0.5 block">
+                                              {lastInterval} วัน
+                                          </span>
+                                      </div>
+                                      <div className="p-2 bg-emerald-100 text-emerald-600 rounded-lg">
+                                          <TrendingUp size={16} />
+                                      </div>
+                                  </div>
+
+                                  <div className="bg-amber-50/45 border border-amber-100/50 p-4 rounded-xl flex items-center justify-between">
+                                      <div>
+                                          <span className="text-[11px] text-gray-500 font-semibold block">เสถียรภาพรอบ (Range Scale)</span>
+                                          <span className="text-xs font-bold text-amber-700 mt-1 block leading-normal">
+                                              เร็วที่สุด: {minInterval} วัน<br />
+                                              นานที่สุด: {maxInterval} วัน
+                                          </span>
+                                      </div>
+                                      <div className="p-2 bg-amber-100 text-amber-600 rounded-lg">
+                                          <AlertTriangle size={16} />
+                                      </div>
+                                  </div>
+                              </div>
+
+                              {/* Chart visualizer */}
+                              <div className="lg:col-span-3 h-[240px] w-full bg-gray-50/30 p-4 rounded-xl border border-gray-100 relative">
+                                  <ResponsiveContainer width="100%" height="100%">
+                                      <LineChart
+                                          data={intervalChartData}
+                                          margin={{ top: 20, right: 20, left: -20, bottom: 5 }}
+                                      >
+                                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f3f4f6" />
+                                          <XAxis 
+                                              dataKey="date" 
+                                              tickLine={false} 
+                                              axisLine={false}
+                                              tick={{ fill: '#6b7280', fontSize: 11 }}
+                                          />
+                                          <YAxis 
+                                              tickLine={false} 
+                                              axisLine={false}
+                                              tick={{ fill: '#6b7280', fontSize: 11 }}
+                                              label={{ value: 'ระยะวันเว้นสั่ง (วัน)', angle: -90, position: 'insideLeft', style: { textAnchor: 'middle', fill: '#9ca3af', fontSize: 10 } }}
+                                          />
+                                          <RechartsTooltip content={<CustomTooltipPrivate />} />
+                                          <ReferenceLine 
+                                              y={avgInterval} 
+                                              stroke="#eab308" 
+                                              strokeDasharray="4 4" 
+                                              label={{ value: `เฉลี่ย: ${avgInterval.toFixed(1)} วัน`, fill: '#ca8a04', position: 'top', fontSize: 10, fontWeight: 'bold' }} 
+                                          />
+                                          <Line 
+                                              type="monotone" 
+                                              dataKey="days" 
+                                              stroke="#6366f1" 
+                                              strokeWidth={3}
+                                              dot={{ r: 5, strokeWidth: 2, fill: '#fff', stroke: '#6366f1' }}
+                                              activeDot={{ r: 7, strokeWidth: 2 }}
+                                          />
+                                      </LineChart>
+                                  </ResponsiveContainer>
+                              </div>
+                          </div>
+                      )}
                   </div>
 
                   <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
