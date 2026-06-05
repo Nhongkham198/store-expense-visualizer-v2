@@ -46,6 +46,8 @@ interface PendingItem {
 
 const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<ViewMode>(ViewMode.DASHBOARD);
+  const [overviewFilter, setOverviewFilter] = useState<'urgent' | 'near_due' | 'normal'>('urgent');
+  const [selectedDetailItemName, setSelectedDetailItemName] = useState<string | null>(null);
   
   // Data State
   const [transactions, setTransactions] = useState<Transaction[]>(() => {
@@ -1560,7 +1562,594 @@ const App: React.FC = () => {
       </div>
     </div>
   );
-  
+
+  interface ItemPrediction {
+      id: string;
+      name: string;
+      latestDate: string;
+      latestPrice: number;
+      latestQty: number;
+      latestUnit: string;
+      latestTotal: number;
+      latestRemark: string;
+      averageIntervalDays: number;
+      nextOrderDate: Date | null;
+      daysRemaining: number | null;
+      status: 'urgent' | 'near_due' | 'normal' | 'insufficient';
+      historyCount: number;
+  }
+
+  const getInventoryPredictions = (items: InventoryItem[]): ItemPrediction[] => {
+      const groups = new Map<string, InventoryItem[]>();
+      items.forEach(item => {
+          const key = item.name.trim().toLowerCase();
+          if (!groups.has(key)) {
+              groups.set(key, []);
+          }
+          groups.get(key)!.push(item);
+      });
+
+      const predictions: ItemPrediction[] = [];
+
+      groups.forEach((groupItems, nameKey) => {
+          const sorted = [...groupItems].sort((a, b) => {
+              const timeA = new Date(a.date).getTime();
+              const timeB = new Date(b.date).getTime();
+              if (timeA !== timeB) return timeA - timeB;
+              return a.id.localeCompare(b.id);
+          });
+
+          const latestItem = sorted[sorted.length - 1];
+
+          let totalDiffDays = 0;
+          let intervalCount = 0;
+          for (let i = 1; i < sorted.length; i++) {
+              const prev = new Date(sorted[i - 1].date);
+              const curr = new Date(sorted[i].date);
+              const diffMs = curr.getTime() - prev.getTime();
+              const diffDays = diffMs / (1000 * 60 * 60 * 24);
+              if (diffDays >= 0) {
+                  totalDiffDays += diffDays;
+                  intervalCount++;
+              }
+          }
+
+          const avgInterval = intervalCount > 0 ? (totalDiffDays / intervalCount) : 0;
+          
+          let nextOrderDate: Date | null = null;
+          let daysRemaining: number | null = null;
+          let status: 'urgent' | 'near_due' | 'normal' | 'insufficient' = 'insufficient';
+
+          if (avgInterval > 0) {
+              nextOrderDate = new Date(new Date(latestItem.date).getTime() + avgInterval * 24 * 60 * 60 * 1000);
+              
+              const today = new Date();
+              today.setHours(0, 0, 0, 0);
+
+              const nextCompare = new Date(nextOrderDate.getTime());
+              nextCompare.setHours(0, 0, 0, 0);
+
+              const diffMs = nextCompare.getTime() - today.getTime();
+              daysRemaining = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+
+              if (daysRemaining <= 0) {
+                  status = 'urgent';
+              } else if (daysRemaining <= 3) {
+                  status = 'near_due';
+              } else {
+                  status = 'normal';
+              }
+          } else {
+              status = 'insufficient';
+          }
+
+          predictions.push({
+              id: latestItem.id,
+              name: latestItem.name,
+              latestDate: latestItem.date,
+              latestPrice: latestItem.pricePerUnit,
+              latestQty: latestItem.quantity,
+              latestUnit: latestItem.unit,
+              latestTotal: latestItem.totalPrice,
+              latestRemark: latestItem.remark || '',
+              averageIntervalDays: avgInterval,
+              nextOrderDate,
+              daysRemaining,
+              status,
+              historyCount: sorted.length
+          });
+      });
+
+      return predictions;
+  };
+
+  const renderOverviewStatusTab = () => {
+      const itemsByName = new Map<string, typeof inventory>();
+      inventory.forEach(item => {
+          const key = item.name.trim().toLowerCase();
+          if (!itemsByName.has(key)) {
+              itemsByName.set(key, []);
+          }
+          itemsByName.get(key)!.push(item);
+      });
+
+      const groupAnalysis = new Map<string, {
+          averageIntervalDays: number;
+          sortedIds: string[];
+      }>();
+
+      itemsByName.forEach((items, nameKey) => {
+          const sorted = [...items].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+          let totalDiffDays = 0;
+          let intervalCount = 0;
+          
+          for (let i = 1; i < sorted.length; i++) {
+              const datePrev = new Date(sorted[i-1].date);
+              const dateCurr = new Date(sorted[i].date);
+              const diffTime = dateCurr.getTime() - datePrev.getTime();
+              const diffDays = diffTime / (1000 * 60 * 60 * 24);
+              if (diffDays >= 0) {
+                  totalDiffDays += diffDays;
+                  intervalCount++;
+              }
+          }
+          const avg = intervalCount > 0 ? (totalDiffDays / intervalCount) : 0;
+          groupAnalysis.set(nameKey, {
+              averageIntervalDays: avg,
+              sortedIds: sorted.map(x => x.id)
+          });
+      });
+
+      const renderNextOrderInfo = (item: InventoryItem) => {
+          const key = item.name.trim().toLowerCase();
+          const analysis = groupAnalysis.get(key);
+          if (!analysis || analysis.averageIntervalDays <= 0) {
+              return (
+                  <div className="flex flex-col items-center justify-center">
+                      <span className="text-gray-400 text-xs">-</span>
+                      <span className="inline-flex px-1.5 py-0.5 bg-gray-50 text-gray-400 rounded text-[9px] font-medium border border-gray-100 mt-0.5">
+                          ประวัติไม่พอ
+                      </span>
+                  </div>
+              );
+          }
+
+          const avgInterval = analysis.averageIntervalDays;
+          const itemDate = new Date(item.date);
+          const nextDate = new Date(itemDate.getTime() + avgInterval * 24 * 60 * 60 * 1000);
+          const nextDateStr = nextDate.toLocaleDateString('th-TH', { day: 'numeric', month: 'numeric', year: 'numeric' });
+          const isLatest = analysis.sortedIds[analysis.sortedIds.length - 1] === item.id;
+          
+          if (!isLatest) {
+              return (
+                  <div className="flex flex-col items-center justify-center">
+                      <span className="text-gray-400 text-xs line-through" title="เลยกำหนดแล้วและสั่งครั้งใหม่แล้ว">{nextDateStr}</span>
+                      <span className="inline-flex px-1.5 py-0.5 bg-blue-50 text-blue-500 rounded text-[9px] font-bold border border-blue-100 mt-0.5">
+                          สั่งแล้ว
+                      </span>
+                  </div>
+              );
+          }
+
+          const today = new Date();
+          today.setHours(0,0,0,0);
+          const nextDateCompare = new Date(nextDate.getTime());
+          nextDateCompare.setHours(0,0,0,0);
+          const diffMs = nextDateCompare.getTime() - today.getTime();
+          const daysRemaining = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+
+          if (daysRemaining < 0) {
+              return (
+                  <div className="flex flex-col items-center justify-center gap-0.5">
+                      <span className="text-red-600 font-bold text-xs">{nextDateStr}</span>
+                      <span className="inline-flex items-center gap-0.5 px-2 py-0.5 bg-red-100 text-red-700 rounded-full text-[9px] font-bold animate-pulse border border-red-200">
+                          <AlertCircle size={8} /> ด่วนมาก (เกิน {Math.abs(daysRemaining)} วัน)
+                      </span>
+                  </div>
+              );
+          } else if (daysRemaining === 0) {
+              return (
+                  <div className="flex flex-col items-center justify-center gap-0.5">
+                      <span className="text-orange-600 font-bold text-xs">{nextDateStr}</span>
+                      <span className="inline-flex items-center gap-0.5 px-2 py-0.5 bg-orange-100 text-orange-700 rounded-full text-[9px] font-bold border border-orange-200">
+                          <Clock size={8} /> ด่วน (วันนี้)
+                      </span>
+                  </div>
+              );
+          } else if (daysRemaining <= 3) {
+              return (
+                  <div className="flex flex-col items-center justify-center gap-0.5">
+                      <span className="text-amber-600 font-bold text-xs">{nextDateStr}</span>
+                      <span className="inline-flex items-center gap-0.5 px-2 py-0.5 bg-amber-50 text-amber-600 rounded-full text-[9px] font-semibold border border-amber-200">
+                          <Clock size={8} /> ใกล้ถึงกำหนด ({daysRemaining} วัน)
+                      </span>
+                  </div>
+              );
+          } else {
+              return (
+                  <div className="flex flex-col items-center justify-center gap-0.5">
+                      <span className="text-gray-600 text-xs">{nextDateStr}</span>
+                      <span className="inline-flex items-center gap-0.5 px-2 py-0.5 bg-green-50 text-green-600 rounded-full text-[9px] font-semibold border border-green-200">
+                          <Check size={8} /> ปกติ (อีก {daysRemaining} วัน)
+                      </span>
+                  </div>
+              );
+          }
+      };
+
+      const renderPriceStatusWithDifference = (item: InventoryItem) => {
+          const key = item.name.trim().toLowerCase();
+          const sameNameItems = inventory.filter(i => i.name.trim().toLowerCase() === key);
+          const sorted = [...sameNameItems].sort((a, b) => {
+              const timeA = new Date(a.date).getTime();
+              const timeB = new Date(b.date).getTime();
+              if (timeA !== timeB) return timeA - timeB;
+              return a.id.localeCompare(b.id);
+          });
+
+          const currentIndex = sorted.findIndex(i => i.id === item.id);
+          if (currentIndex <= 0) {
+              return (
+                  <div className="flex flex-col items-center justify-center">
+                      <span className="text-gray-400 text-xs font-medium">-</span>
+                      <span className="text-[9px] text-gray-400 bg-gray-50 border border-gray-100 px-1 py-0.5 rounded mt-0.5">
+                          ประวัติแรก
+                      </span>
+                  </div>
+              );
+          }
+
+          const prevItem = sorted[currentIndex - 1];
+          const prevPrice = prevItem.pricePerUnit;
+          const currentPrice = item.pricePerUnit;
+          const diffVal = currentPrice - prevPrice;
+          const diffPercent = prevPrice > 0 ? (diffVal / prevPrice) * 100 : 0;
+
+          if (diffVal > 0) {
+              return (
+                  <div className="flex flex-col items-center justify-center gap-0.5" title={`ราคาครั้งก่อน: ฿${prevPrice.toLocaleString()}`}>
+                      <span className="text-red-600 font-bold text-xs font-mono">
+                          +฿{diffVal.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}
+                      </span>
+                      <span className="inline-flex items-center gap-1 px-2 py-1 bg-red-100 text-red-700 rounded-full text-[10px] font-bold">
+                          <AlertTriangle size={10} />
+                          +{diffPercent.toFixed(0)}%
+                      </span>
+                  </div>
+              );
+          } else if (diffVal < 0) {
+              return (
+                  <div className="flex flex-col items-center justify-center gap-0.5" title={`ราคาครั้งก่อน: ฿${prevPrice.toLocaleString()}`}>
+                      <span className="text-green-600 font-bold text-xs font-mono">
+                          -฿{Math.abs(diffVal).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}
+                      </span>
+                      <span className="inline-flex items-center gap-1 px-2 py-1 bg-green-100 text-green-700 rounded-full text-[10px] font-bold">
+                          <TrendingDown size={10} />
+                          ~ {diffPercent.toFixed(0)}%
+                      </span>
+                  </div>
+              );
+          } else {
+              return (
+                  <div className="flex flex-col items-center justify-center gap-0.5" title={`ราคาเท่าเดิมกับครั้งก่อน: ฿${prevPrice.toLocaleString()}`}>
+                      <span className="text-gray-550 font-medium text-xs font-mono">฿0</span>
+                      <span className="text-gray-400 text-[10px] bg-gray-50 px-2 py-0.5 rounded-full border border-gray-100 font-medium">
+                          = 0%
+                      </span>
+                  </div>
+              );
+          }
+      };
+
+      const predictions = getInventoryPredictions(inventory);
+
+      const urgentItems = predictions.filter(p => p.status === 'urgent');
+      const nearDueItems = predictions.filter(p => p.status === 'near_due');
+      const normalItems = predictions.filter(p => p.status === 'normal' || p.status === 'insufficient');
+
+      let displayedItems: ItemPrediction[] = [];
+      if (overviewFilter === 'urgent') displayedItems = urgentItems;
+      else if (overviewFilter === 'near_due') displayedItems = nearDueItems;
+      else displayedItems = normalItems;
+
+      displayedItems.sort((a, b) => {
+          if (a.daysRemaining !== null && b.daysRemaining !== null) {
+              return a.daysRemaining - b.daysRemaining;
+          }
+          if (a.daysRemaining !== null) return -1;
+          if (b.daysRemaining !== null) return 1;
+          return a.name.localeCompare(b.name);
+      });
+
+      if (selectedDetailItemName) {
+          const key = selectedDetailItemName.trim().toLowerCase();
+          const historyList = inventory
+              .filter(item => item.name.trim().toLowerCase() === key)
+              .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+          return (
+              <div className="space-y-6">
+                  <div className="flex items-center justify-between border-b border-gray-100 pb-4 mb-4">
+                      <div className="flex items-center gap-3">
+                          <button 
+                              onClick={() => setSelectedDetailItemName(null)}
+                              className="p-1 px-3 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all outline-none"
+                          >
+                              <ChevronLeft size={16} /> กลับหน้ารวมสถานะ
+                          </button>
+                          <div className="h-4 w-[1px] bg-gray-200"></div>
+                          <h2 className="text-xl font-bold text-gray-800">
+                              ประวัติการซื้อวัตถุดิบ: {selectedDetailItemName}
+                          </h2>
+                      </div>
+                  </div>
+
+                  <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
+                      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
+                          <h3 className="text-base font-bold text-gray-800 flex items-center gap-2">
+                              <span className="w-2.5 h-2.5 bg-indigo-500 rounded-full"></span>
+                              ประวัติการซื้อล่าสุด ({historyList.length})
+                          </h3>
+                          
+                          <div className="flex items-center gap-2">
+                              <div className="relative w-full md:w-64">
+                                  <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                                  <input 
+                                      type="text" 
+                                      value={selectedDetailItemName}
+                                      readOnly
+                                      className="w-full bg-gray-50 border border-gray-200 rounded-lg pl-9 pr-8 py-1.5 text-xs font-semibold text-gray-700 focus:outline-none" 
+                                  />
+                                  <button 
+                                      onClick={() => setSelectedDetailItemName(null)}
+                                      className="absolute right-2 top-1/2 -translate-y-1/2 hover:text-red-500 transition-colors text-gray-400"
+                                      title="ล้าง"
+                                  >
+                                      <X size={14} className="stroke-[2.5px]" />
+                                  </button>
+                              </div>
+                          </div>
+                      </div>
+
+                      <div className="overflow-x-auto">
+                          <table className="w-full text-left border-collapse text-xs md:text-sm">
+                              <thead>
+                                  <tr className="bg-gray-50 text-gray-600 font-bold uppercase tracking-wider border-b border-gray-100">
+                                      <th className="px-4 py-3 rounded-l-lg w-10"></th>
+                                      <th className="px-4 py-3">วันที่</th>
+                                      <th className="px-4 py-3">รายการ</th>
+                                      <th className="px-4 py-3 text-right">ราคา/หน่วย</th>
+                                      <th className="px-4 py-3 text-center">จำนวน</th>
+                                      <th className="px-4 py-3 text-right">รวม</th>
+                                      <th className="px-4 py-3 text-center w-32">หมายเหตุ</th>
+                                      <th className="px-4 py-3 text-center">คาดว่าสั่งอีกครั้ง</th>
+                                      <th className="px-4 py-3 text-center rounded-r-lg">สถานะราคา</th>
+                                  </tr>
+                              </thead>
+                              <tbody className="divide-y divide-gray-100">
+                                  {historyList.map((item) => (
+                                      <tr key={item.id} className="hover:bg-gray-50/50 transition-colors">
+                                          <td className="px-4 py-3 text-center">
+                                              <input 
+                                                  type="checkbox" 
+                                                  checked={false} 
+                                                  readOnly 
+                                                  className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500" 
+                                              />
+                                          </td>
+                                          <td className="px-4 py-3 text-gray-500 whitespace-nowrap">
+                                              {new Date(item.date).toLocaleDateString('th-TH')}
+                                          </td>
+                                          <td className="px-4 py-3 font-semibold text-gray-800">{item.name}</td>
+                                          <td className="px-4 py-3 text-right font-mono">฿{item.pricePerUnit.toLocaleString()}</td>
+                                          <td className="px-4 py-3 text-center font-medium">{item.quantity} {item.unit}</td>
+                                          <td className="px-4 py-3 text-right font-semibold font-mono text-gray-800">฿{item.totalPrice.toLocaleString()}</td>
+                                          <td className="px-4 py-3 text-center text-gray-500 text-xs italic">
+                                              {item.remark || '-'}
+                                          </td>
+                                          <td className="px-4 py-3 text-center">
+                                              {renderNextOrderInfo(item)}
+                                          </td>
+                                          <td className="px-4 py-3 text-center">
+                                              {renderPriceStatusWithDifference(item)}
+                                          </td>
+                                      </tr>
+                                  ))}
+                              </tbody>
+                          </table>
+                      </div>
+                  </div>
+              </div>
+          );
+      }
+
+      return (
+          <div className="space-y-6">
+              <div className="bg-gradient-to-r from-indigo-50 to-purple-50 rounded-2xl border border-indigo-100 p-5 mb-2">
+                  <h2 className="text-base font-bold text-indigo-900 flex items-center gap-2">
+                      📊 ระบบพยากรณ์การซื้อวัตถุดิบ (Order Prediction & Cycle Analysis)
+                  </h2>
+                  <p className="text-xs text-indigo-850 mt-1 leading-relaxed">
+                      วิเคราะห์เวลาเฉลี่ย (Average Cycle) ในประวัติการสั่งซื้อแต่ละประเภท เพื่อคำนวณรอบวัน และแนะนำวันสั่งซื้อครั้งถัดไปโดยอัตโนมัติ เพื่อไม่ให้วัตถุดิบขาดสต็อก
+                  </p>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                  <button 
+                      onClick={() => setOverviewFilter('urgent')}
+                      className={`flex flex-col items-start p-5 rounded-2xl border transition-all text-left group gap-2 relative overflow-hidden ${
+                          overviewFilter === 'urgent' 
+                          ? 'border-red-350 bg-red-50 shadow ring-2 ring-red-250' 
+                          : 'border-gray-100 bg-white hover:border-red-200 hover:bg-red-50/20'
+                      }`}
+                  >
+                      <div className="flex items-center justify-between w-full">
+                          <span className="text-xs font-bold tracking-wide text-red-600 bg-red-100/80 px-2.5 py-0.5 rounded-full border border-red-200 flex items-center gap-1">
+                              <AlertCircle size={10} className="animate-pulse" /> ด่วนมาก
+                          </span>
+                          <div className={`p-1.5 rounded-lg transition-transform group-hover:scale-110 ${
+                              overviewFilter === 'urgent' ? 'bg-red-200 text-red-700' : 'bg-red-50 text-red-500'
+                          }`}>
+                              <AlertCircle size={16} />
+                          </div>
+                      </div>
+                      <div>
+                          <span className="text-3xl font-extrabold text-red-600 block mt-1">
+                              {urgentItems.length}
+                          </span>
+                          <span className="text-xs text-gray-500 block">ถึงกำหนดสั่งซื้อแล้ว หรือ เลยกำหนด</span>
+                      </div>
+                  </button>
+
+                  <button 
+                      onClick={() => setOverviewFilter('near_due')}
+                      className={`flex flex-col items-start p-5 rounded-2xl border transition-all text-left group gap-2 relative overflow-hidden ${
+                          overviewFilter === 'near_due' 
+                          ? 'border-amber-350 bg-amber-50 shadow ring-2 ring-amber-250' 
+                          : 'border-gray-100 bg-white hover:border-amber-200 hover:bg-amber-50/20'
+                      }`}
+                  >
+                      <div className="flex items-center justify-between w-full">
+                          <span className="text-xs font-bold tracking-wide text-amber-600 bg-amber-100/80 px-2.5 py-0.5 rounded-full border border-amber-200 flex items-center gap-1">
+                              <Clock size={10} /> ใกล้ถึงกำหนด
+                          </span>
+                          <div className={`p-1.5 rounded-lg transition-transform group-hover:scale-110 ${
+                              overviewFilter === 'near_due' ? 'bg-amber-200 text-amber-700' : 'bg-amber-50 text-amber-500'
+                          }`}>
+                              <Clock size={16} />
+                          </div>
+                      </div>
+                      <div>
+                          <span className="text-3xl font-extrabold text-amber-600 block mt-1">
+                              {nearDueItems.length}
+                          </span>
+                          <span className="text-xs text-gray-500 block">คาดว่าสั่งซื้อภายในอีก 1-3 วัน</span>
+                      </div>
+                  </button>
+
+                  <button 
+                      onClick={() => setOverviewFilter('normal')}
+                      className={`flex flex-col items-start p-5 rounded-2xl border transition-all text-left group gap-2 relative overflow-hidden ${
+                          overviewFilter === 'normal' 
+                          ? 'border-green-350 bg-green-50 shadow ring-2 ring-green-250' 
+                          : 'border-gray-100 bg-white hover:border-green-200 hover:bg-green-50/20'
+                      }`}
+                  >
+                      <div className="flex items-center justify-between w-full">
+                          <span className="text-xs font-bold tracking-wide text-green-600 bg-green-100/80 px-2.5 py-0.5 rounded-full border border-green-200 flex items-center gap-1">
+                              <Check size={10} /> ปกติ
+                          </span>
+                          <div className={`p-1.5 rounded-lg transition-transform group-hover:scale-110 ${
+                              overviewFilter === 'normal' ? 'bg-green-200 text-green-700' : 'bg-green-50 text-green-500'
+                          }`}>
+                              <Check size={16} />
+                          </div>
+                      </div>
+                      <div>
+                          <span className="text-3xl font-extrabold text-green-600 block mt-1">
+                              {normalItems.length}
+                          </span>
+                          <span className="text-xs text-gray-500 block">ระยะเวลารอบซื้อปกติ หรือประวัติแรก</span>
+                      </div>
+                  </button>
+              </div>
+
+              <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
+                  <h3 className="text-base font-bold text-gray-800 mb-4 flex items-center gap-2">
+                      <span className={`w-2.5 h-2.5 rounded-full ${
+                          overviewFilter === 'urgent' ? 'bg-red-500' : overviewFilter === 'near_due' ? 'bg-amber-500' : 'bg-green-500'
+                      }`}></span>
+                      รายการวัตถุดิบเพื่้อพยากรณ์ ({displayedItems.length} รายการ)
+                  </h3>
+
+                  {displayedItems.length === 0 ? (
+                      <div className="text-center py-12 bg-gray-50 rounded-2xl border border-dashed border-gray-200 text-gray-400">
+                          <Package size={36} className="mx-auto mb-2 opacity-50" />
+                          <p className="text-xs font-medium">ไม่มีวัตถุดิบในกลุ่มนี้ในขณะนี้</p>
+                      </div>
+                  ) : (
+                      <div className="overflow-x-auto">
+                          <table className="w-full text-left border-collapse text-xs md:text-sm">
+                              <thead>
+                                  <tr className="bg-gray-50 text-gray-600 font-bold uppercase tracking-wider border-b border-gray-100">
+                                      <th className="px-4 py-3 rounded-l-lg">วัตถุดิบ</th>
+                                      <th className="px-4 py-3">วันที่สั่งครั้งล่าสุด</th>
+                                      <th className="px-4 py-3 text-center">รอบซื้อเฉลี่ย</th>
+                                      <th className="px-4 py-3 text-center">คาดว่าสั่งอีกครั้ง</th>
+                                      <th className="px-4 py-3 text-center">สถานะคงเหลือ</th>
+                                      <th className="px-4 py-3 rounded-r-lg text-center">ประวัติ</th>
+                                  </tr>
+                              </thead>
+                              <tbody className="divide-y divide-gray-100">
+                                  {displayedItems.map((item) => (
+                                      <tr 
+                                          key={item.id} 
+                                          className="hover:bg-indigo-50/25 cursor-pointer transition-colors group"
+                                          onClick={() => setSelectedDetailItemName(item.name)}
+                                      >
+                                          <td className="px-4 py-3 font-semibold text-gray-800 group-hover:text-indigo-600">
+                                              {item.name}
+                                          </td>
+                                          <td className="px-4 py-3 text-gray-600">
+                                              {new Date(item.latestDate).toLocaleDateString('th-TH')}
+                                          </td>
+                                          <td className="px-4 py-3 text-center font-mono font-semibold text-indigo-600">
+                                              {item.averageIntervalDays > 0 
+                                                  ? `${item.averageIntervalDays.toFixed(0)} วัน` 
+                                                  : 'ประวัติแรก'
+                                              }
+                                          </td>
+                                          <td className="px-4 py-3 text-center font-semibold text-gray-750">
+                                              {item.nextOrderDate 
+                                                  ? item.nextOrderDate.toLocaleDateString('th-TH')
+                                                  : '-'
+                                              }
+                                          </td>
+                                          <td className="px-4 py-3 text-center">
+                                              {item.daysRemaining !== null ? (
+                                                  item.daysRemaining < 0 ? (
+                                                      <span className="inline-flex px-2 py-0.5 bg-red-100 text-red-700 rounded-full text-[10px] font-bold">
+                                                          ด่วนมาก (เกิน {Math.abs(item.daysRemaining)} วัน)
+                                                      </span>
+                                                  ) : item.daysRemaining === 0 ? (
+                                                      <span className="inline-flex px-2 py-0.5 bg-orange-100 text-orange-700 rounded-full text-[10px] font-bold">
+                                                          ด่วน (วันนี้)
+                                                      </span>
+                                                  ) : item.daysRemaining <= 3 ? (
+                                                      <span className="inline-flex px-2 py-0.5 bg-amber-105 bg-amber-100 text-amber-700 rounded-full text-[10px] font-bold">
+                                                          ใกล้ครบกำหนด ({item.daysRemaining} วัน)
+                                                      </span>
+                                                  ) : (
+                                                      <span className="inline-flex px-2 py-0.5 bg-green-100 text-green-700 rounded-full text-[10px] font-bold">
+                                                          ดี (อีก {item.daysRemaining} วัน)
+                                                      </span>
+                                                  )
+                                              ) : (
+                                                  <span className="inline-flex px-2 py-0.5 bg-gray-100 text-gray-500 rounded-full text-[10px] font-medium">
+                                                      ประวัติแรก
+                                                  </span>
+                                              )}
+                                          </td>
+                                          <td className="px-4 py-3 text-center">
+                                              <button 
+                                                  className="p-1 px-2.5 text-indigo-600 hover:text-indigo-800 bg-indigo-50 hover:bg-indigo-100 rounded-lg text-[11px] font-bold flex items-center gap-1 mx-auto transition-colors"
+                                                  title="ดูประวัติการซื้อ"
+                                              >
+                                                  <span>ประวัติ ({item.historyCount})</span>
+                                                  <ChevronRight size={12} className="stroke-[2.5px]" />
+                                              </button>
+                                          </td>
+                                      </tr>
+                                  ))}
+                              </tbody>
+                          </table>
+                      </div>
+                  )}
+              </div>
+          </div>
+      );
+  };
+
   const renderInventoryTab = () => {
     // 1. Group ALL inventory items by their trimmed, lowercase name to get complete purchasing intervals
     const itemsByName = new Map<string, typeof inventory>();
@@ -1683,6 +2272,73 @@ const App: React.FC = () => {
                     <span className="text-gray-600 text-xs">{nextDateStr}</span>
                     <span className="inline-flex items-center gap-0.5 px-2 py-0.5 bg-green-50 text-green-600 rounded-full text-[9px] font-semibold border border-green-200">
                         <Check size={8} /> ปกติ (อีก {daysRemaining} วัน)
+                    </span>
+                </div>
+            );
+        }
+    };
+
+    const renderPriceStatusWithDifference = (item: InventoryItem) => {
+        const key = item.name.trim().toLowerCase();
+        const sameNameItems = inventory.filter(i => i.name.trim().toLowerCase() === key);
+        
+        // Sort ascending to find chronological order
+        const sorted = [...sameNameItems].sort((a, b) => {
+            const timeA = new Date(a.date).getTime();
+            const timeB = new Date(b.date).getTime();
+            if (timeA !== timeB) return timeA - timeB;
+            return a.id.localeCompare(b.id);
+        });
+
+        const currentIndex = sorted.findIndex(i => i.id === item.id);
+        
+        if (currentIndex <= 0) {
+            return (
+                <div className="flex flex-col items-center justify-center">
+                    <span className="text-gray-400 text-xs font-medium">-</span>
+                    <span className="text-[9px] text-gray-400 bg-gray-50 border border-gray-100 px-1 py-0.5 rounded mt-0.5">
+                        ประวัติแรก
+                    </span>
+                </div>
+            );
+        }
+
+        const prevItem = sorted[currentIndex - 1];
+        const prevPrice = prevItem.pricePerUnit;
+        const currentPrice = item.pricePerUnit;
+        const diffVal = currentPrice - prevPrice;
+        const diffPercent = prevPrice > 0 ? (diffVal / prevPrice) * 100 : 0;
+
+        if (diffVal > 0) {
+            return (
+                <div className="flex flex-col items-center justify-center gap-0.5" title={`ราคาครั้งก่อน: ฿${prevPrice.toLocaleString()}`}>
+                    <span className="text-red-600 font-bold text-xs font-mono">
+                        +฿{diffVal.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}
+                    </span>
+                    <span className="inline-flex items-center gap-1 px-2 py-1 bg-red-100 text-red-700 rounded-full text-[10px] font-bold">
+                        <AlertTriangle size={10} />
+                        +{diffPercent.toFixed(0)}%
+                    </span>
+                </div>
+            );
+        } else if (diffVal < 0) {
+            return (
+                <div className="flex flex-col items-center justify-center gap-0.5" title={`ราคาครั้งก่อน: ฿${prevPrice.toLocaleString()}`}>
+                    <span className="text-green-600 font-bold text-xs font-mono">
+                        -฿{Math.abs(diffVal).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}
+                    </span>
+                    <span className="inline-flex items-center gap-1 px-2 py-1 bg-green-100 text-green-700 rounded-full text-[10px] font-bold">
+                        <TrendingDown size={10} />
+                        ~ {diffPercent.toFixed(0)}%
+                    </span>
+                </div>
+            );
+        } else {
+            return (
+                <div className="flex flex-col items-center justify-center gap-0.5" title={`ราคาเท่าเดิมกับครั้งก่อน: ฿${prevPrice.toLocaleString()}`}>
+                    <span className="text-gray-500 font-medium text-xs font-mono">฿0</span>
+                    <span className="text-gray-400 text-[10px] bg-gray-50 px-2 py-0.5 rounded-full border border-gray-100 font-medium">
+                        = 0%
                     </span>
                 </div>
             );
@@ -2338,21 +2994,7 @@ const App: React.FC = () => {
                                         {renderNextOrderInfo(item)}
                                     </td>
                                     <td className="px-4 py-3 text-center">
-                                        {item.status === 'expensive' && (
-                                            <span className="inline-flex items-center gap-1 px-2 py-1 bg-red-100 text-red-700 rounded-full text-[10px] font-bold">
-                                                <AlertTriangle size={10} /> 
-                                                +{item.priceDiffPercent?.toFixed(0)}%
-                                            </span>
-                                        )}
-                                        {item.status === 'cheap' && (
-                                            <span className="inline-flex items-center gap-1 px-2 py-1 bg-green-100 text-green-700 rounded-full text-[10px] font-bold">
-                                                <TrendingDown size={10} />
-                                                {item.priceDiffPercent?.toFixed(0)}%
-                                            </span>
-                                        )}
-                                        {item.status === 'normal' && (
-                                            <span className="text-gray-400 text-[10px]">-</span>
-                                        )}
+                                        {renderPriceStatusWithDifference(item)}
                                     </td>
                                 </>
                             )}
@@ -2396,30 +3038,69 @@ const App: React.FC = () => {
 
   const renderLoginScreen = () => (
     <div className="flex flex-col items-center justify-center h-[calc(100vh-160px)] animate-fade-in p-4">
-        <div className="bg-white p-8 rounded-2xl shadow-lg border border-gray-100 w-full max-w-sm text-center">
+        <div className="bg-white p-6 md:p-8 rounded-2xl shadow-lg border border-gray-100 w-full max-w-sm text-center">
            <div className="w-16 h-16 bg-red-50 rounded-full flex items-center justify-center mx-auto mb-4 text-red-500 shadow-inner">
               <Lock size={32} />
            </div>
            <h3 className="text-xl font-bold text-gray-800 mb-2">ยืนยันตัวตน (Admin Access)</h3>
-           <p className="text-sm text-gray-500 mb-6">กรุณาใส่รหัสผ่านเพื่อจัดการข้อมูลร้านค้า</p>
+           <p className="text-sm text-gray-500 mb-5">กรุณาใส่รหัสผ่านเพื่อจัดการข้อมูลร้านค้า</p>
 
            <form onSubmit={handleLogin}>
              <input 
                 type="password" 
                 value={passwordInput}
                 onChange={(e) => setPasswordInput(e.target.value)}
-                className={`w-full border rounded-lg px-4 py-3 text-center text-lg mb-4 focus:outline-none focus:ring-2 transition-all ${
+                className={`w-full border rounded-lg px-4 py-3 text-center text-lg mb-4 focus:outline-none focus:ring-2 transition-all font-mono tracking-widest ${
                     authError ? 'border-red-300 focus:ring-red-200 bg-red-50' : 'border-gray-300 focus:ring-blue-500'
                 }`}
                 placeholder="รหัสผ่าน"
                 autoFocus
                 inputMode="numeric"
              />
+             
              {authError && (
                 <div className="bg-red-50 text-red-600 text-xs py-2 px-3 rounded-md mb-4 flex items-center justify-center gap-1 animate-pulse">
                     <AlertCircle size={12} /> รหัสผ่านไม่ถูกต้อง
                 </div>
              )}
+
+             {/* Interactive Numpad for convenience */}
+             <div className="grid grid-cols-3 gap-2.5 mb-5 max-w-[270px] mx-auto">
+                {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((num) => (
+                  <button
+                    key={num}
+                    type="button"
+                    onClick={() => setPasswordInput(prev => prev + num.toString())}
+                    className="h-12 bg-gray-50 text-gray-800 font-extrabold rounded-xl border border-gray-200 hover:bg-gray-100 active:bg-gray-200 active:scale-95 transition-all text-lg flex items-center justify-center shadow-sm select-none"
+                  >
+                    {num}
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  onClick={() => setPasswordInput('')}
+                  className="h-12 bg-red-50 text-red-600 font-bold rounded-xl border border-red-100 hover:bg-red-100 active:bg-red-200 active:scale-95 transition-all text-xs flex items-center justify-center shadow-xs select-none"
+                  title="ล้างทั้งหมด"
+                >
+                  ล้างข้อมูล
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPasswordInput(prev => prev + '0')}
+                  className="h-12 bg-gray-50 text-gray-800 font-extrabold rounded-xl border border-gray-200 hover:bg-gray-100 active:bg-gray-250 active:scale-95 transition-all text-lg flex items-center justify-center shadow-sm select-none"
+                >
+                  0
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPasswordInput(prev => prev.slice(0, -1))}
+                  className="h-12 bg-gray-100 text-gray-700 font-semibold rounded-xl border border-gray-250 hover:bg-gray-200 active:scale-95 transition-all text-sm flex items-center justify-center shadow-xs select-none"
+                  title="ลบหลักล่าสุด"
+                >
+                  ⌫
+                </button>
+             </div>
+
              <button 
                 type="submit"
                 className="w-full bg-red-600 text-white py-3 rounded-lg font-bold hover:bg-red-700 transition-colors shadow-sm active:scale-95 transform duration-150"
@@ -2771,6 +3452,13 @@ const App: React.FC = () => {
             <Package size={18} />
             วัตถุดิบ (Raw Materials)
           </button>
+           <button 
+            onClick={() => { setActiveTab(ViewMode.OVERVIEW_STATUS); setIsMobileMenuOpen(false); }}
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-colors ${activeTab === ViewMode.OVERVIEW_STATUS ? 'bg-indigo-50 text-indigo-700' : 'text-gray-600 hover:bg-gray-50'}`}
+          >
+            <Clock size={18} />
+            สถานะภาพรวม (Overview Status)
+          </button>
         </nav>
         
         <div className="absolute bottom-0 left-0 w-full p-6 border-t border-gray-100">
@@ -2813,6 +3501,7 @@ const App: React.FC = () => {
                   {activeTab === ViewMode.TRANSACTIONS && 'บันทึกรายจ่ายรวม (Transactions)'}
                   {activeTab === ViewMode.IMPORT && 'จัดการลิงก์ข้อมูล (Data Source)'}
                   {activeTab === ViewMode.INVENTORY && 'คลังวัตถุดิบ (Inventory)'}
+                  {activeTab === ViewMode.OVERVIEW_STATUS && 'สถานะรอบสั่งซื้อ (Overview Status)'}
                 </h1>
                 <p className="text-gray-500 mt-1 flex items-center gap-2 flex-wrap text-xs md:text-sm">
                   {isUsingRealData 
@@ -2831,7 +3520,7 @@ const App: React.FC = () => {
                   )}
                 </p>
               </div>
-              {activeTab !== ViewMode.IMPORT && activeTab !== ViewMode.INVENTORY && (
+              {activeTab !== ViewMode.IMPORT && activeTab !== ViewMode.INVENTORY && activeTab !== ViewMode.OVERVIEW_STATUS && (
                 <button 
                   onClick={handleSync}
                   className="px-4 py-2 bg-white border border-gray-200 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors flex items-center gap-2 shadow-sm self-start md:self-auto"
@@ -2855,6 +3544,8 @@ const App: React.FC = () => {
             {activeTab === ViewMode.INVENTORY && (
                 isAuthenticated ? renderInventoryTab() : renderLoginScreen()
             )}
+            
+            {activeTab === ViewMode.OVERVIEW_STATUS && renderOverviewStatusTab()}
           </div>
         </div>
       </main>
