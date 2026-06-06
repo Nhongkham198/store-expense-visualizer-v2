@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, 
-  PieChart, Pie, Cell, Rectangle, LineChart, Line, ReferenceLine
+  PieChart, Pie, Cell, Rectangle, LineChart, Line, ReferenceLine, ComposedChart
 } from 'recharts';
 import { 
   LayoutDashboard, List, FileSpreadsheet, Wallet, TrendingUp, AlertCircle, 
@@ -1121,8 +1121,20 @@ const App: React.FC = () => {
     });
     
     // Convert Map to Array and Sort by Time (Oldest -> Newest)
-    return Array.from(summary.values())
+    const sorted = Array.from(summary.values())
         .sort((a, b) => a.sortKey - b.sortKey);
+
+    const windowSize = 3;
+    return sorted.map((item, index, arr) => {
+      const start = Math.max(0, index - windowSize + 1);
+      const chunk = arr.slice(start, index + 1);
+      const sum = chunk.reduce((acc, curr) => acc + curr.amount, 0);
+      const movingAvg = chunk.length > 0 ? sum / chunk.length : 0;
+      return {
+        ...item,
+        movingAverage: Math.round(movingAvg)
+      };
+    });
 
   }, [sheetFilteredTransactions, selectedCategory, trendView, startDate, endDate]);
 
@@ -1426,7 +1438,7 @@ const App: React.FC = () => {
           <div className="h-72">
             {trendData.length > 0 ? (
               <ResponsiveContainer width="100%" height="100%">
-                <BarChart 
+                <ComposedChart 
                     data={trendData}
                     margin={{ top: 10, right: 10, left: -20, bottom: 0 }}
                 >
@@ -1435,11 +1447,16 @@ const App: React.FC = () => {
                   <YAxis stroke="#9CA3AF" tick={{fontSize: 12}} tickFormatter={(value) => `฿${value >= 1000 ? (value/1000).toFixed(0) + 'k' : value}`} />
                   <RechartsTooltip 
                     cursor={{fill: 'transparent'}}
-                    formatter={(value: number) => [`฿${value.toLocaleString()}`, 'Amount']}
+                    formatter={(value: number, name: string) => {
+                      if (name === "amount") return [`฿${value.toLocaleString()}`, 'ยอดรวม (Total)'];
+                      if (name === "movingAverage") return [`฿${value.toLocaleString()}`, 'ค่าเฉลี่ยเคลื่อนที่ (Moving Average)'];
+                      return [`฿${value.toLocaleString()}`, name];
+                    }}
                     contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)' }}
                   />
                   <Bar 
                       dataKey="amount" 
+                      name="amount"
                       radius={[4, 4, 0, 0]} 
                       barSize={trendView === 'yearly' ? 60 : 40}
                       onClick={(data) => {
@@ -1458,7 +1475,16 @@ const App: React.FC = () => {
                         />
                     ))}
                   </Bar>
-                </BarChart>
+                  <Line 
+                      type="monotone" 
+                      dataKey="movingAverage" 
+                      name="movingAverage"
+                      stroke="#F59E0B"
+                      strokeWidth={3}
+                      dot={{ r: 4, strokeWidth: 2, fill: '#fff', stroke: '#F59E0B' }}
+                      activeDot={{ r: 6 }}
+                  />
+                </ComposedChart>
               </ResponsiveContainer>
             ) : (
               <div className="h-full flex items-center justify-center text-gray-400">
