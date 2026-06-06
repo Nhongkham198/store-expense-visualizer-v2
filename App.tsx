@@ -113,6 +113,7 @@ const App: React.FC = () => {
   
   // Chart View State
   const [trendView, setTrendView] = useState<'daily' | 'monthly' | 'yearly'>('daily');
+  const [movingAveragePeriod, setMovingAveragePeriod] = useState<number>(3);
 
   // UI State for Multi-Sheet Input
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -1124,7 +1125,7 @@ const App: React.FC = () => {
     const sorted = Array.from(summary.values())
         .sort((a, b) => a.sortKey - b.sortKey);
 
-    const windowSize = 3;
+    const windowSize = movingAveragePeriod;
     return sorted.map((item, index, arr) => {
       const start = Math.max(0, index - windowSize + 1);
       const chunk = arr.slice(start, index + 1);
@@ -1136,7 +1137,7 @@ const App: React.FC = () => {
       };
     });
 
-  }, [sheetFilteredTransactions, selectedCategory, trendView, startDate, endDate]);
+  }, [sheetFilteredTransactions, selectedCategory, trendView, startDate, endDate, movingAveragePeriod]);
 
   const topCategory = categoryData.length > 0 ? categoryData[0] : { name: '-', value: 0 };
 
@@ -1387,7 +1388,24 @@ const App: React.FC = () => {
              </div>
 
              <div className="flex flex-col items-end gap-2">
-                 <div className="flex bg-gray-100 p-1 rounded-lg">
+                 <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
+                     {/* Moving Average Input */}
+                     <div className="flex items-center gap-1.5 bg-white border border-gray-200 rounded-lg px-2.5 py-1 shadow-sm">
+                         <span className="text-xs text-gray-500 font-medium">Moving Average (MA):</span>
+                         <input 
+                             type="number" 
+                             min="1"
+                             max="50"
+                             value={movingAveragePeriod}
+                             onChange={(e) => {
+                                 const val = parseInt(e.target.value);
+                                 setMovingAveragePeriod(isNaN(val) || val < 1 ? 1 : val);
+                             }}
+                             className="w-8 text-center text-xs font-bold text-amber-500 bg-transparent border-0 focus:outline-none focus:ring-0 p-0"
+                         />
+                     </div>
+
+                     <div className="flex bg-gray-100 p-1 rounded-lg">
                     <button 
                       onClick={() => handleTrendViewChange('daily')}
                       className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${trendView === 'daily' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
@@ -1407,6 +1425,7 @@ const App: React.FC = () => {
                       ปี
                     </button>
                  </div>
+              </div>
 
                  {/* NEW: Date Range Inputs */}
                  <div className="flex items-center gap-1 bg-white border border-gray-200 rounded-md p-1 shadow-sm">
