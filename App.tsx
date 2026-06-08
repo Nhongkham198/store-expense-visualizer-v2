@@ -1709,6 +1709,34 @@ const App: React.FC = () => {
       return predictions;
   };
 
+  // Automatically switch overview tab filter when typing in search to find matching results
+  useEffect(() => {
+    if (overviewSearchTerm.trim()) {
+      const term = overviewSearchTerm.toLowerCase().trim();
+      const predictions = getInventoryPredictions(inventory);
+      const filtered = predictions.filter(p => p.name.toLowerCase().includes(term));
+      
+      const urgentCount = filtered.filter(p => p.status === 'urgent').length;
+      const nearDueCount = filtered.filter(p => p.status === 'near_due').length;
+      const normalCount = filtered.filter(p => p.status === 'normal' || p.status === 'insufficient').length;
+
+      const currentTabCount = 
+        overviewFilter === 'urgent' ? urgentCount :
+        overviewFilter === 'near_due' ? nearDueCount :
+        normalCount;
+
+      if (currentTabCount === 0) {
+        if (urgentCount > 0) {
+          setOverviewFilter('urgent');
+        } else if (nearDueCount > 0) {
+          setOverviewFilter('near_due');
+        } else if (normalCount > 0) {
+          setOverviewFilter('normal');
+        }
+      }
+    }
+  }, [overviewSearchTerm, inventory]);
+
   const renderOverviewStatusTab = () => {
       const itemsByName = new Map<string, typeof inventory>();
       inventory.forEach(item => {
