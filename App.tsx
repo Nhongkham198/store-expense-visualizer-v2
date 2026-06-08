@@ -48,6 +48,7 @@ const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<ViewMode>(ViewMode.DASHBOARD);
   const [overviewFilter, setOverviewFilter] = useState<'urgent' | 'near_due' | 'normal'>('urgent');
   const [selectedDetailItemName, setSelectedDetailItemName] = useState<string | null>(null);
+  const [overviewSearchTerm, setOverviewSearchTerm] = useState<string>('');
   
   // Data State
   const [transactions, setTransactions] = useState<Transaction[]>(() => {
@@ -1886,7 +1887,12 @@ const App: React.FC = () => {
           }
       };
 
-      const predictions = getInventoryPredictions(inventory);
+      let predictions = getInventoryPredictions(inventory);
+
+      if (overviewSearchTerm.trim()) {
+          const term = overviewSearchTerm.toLowerCase().trim();
+          predictions = predictions.filter(p => p.name.toLowerCase().includes(term));
+      }
 
       const urgentItems = predictions.filter(p => p.status === 'urgent');
       const nearDueItems = predictions.filter(p => p.status === 'near_due');
@@ -3729,6 +3735,27 @@ const App: React.FC = () => {
                   <RefreshCw size={16} className={isLoading ? 'animate-spin' : ''} />
                   รีเฟรชข้อมูล
                 </button>
+              )}
+              {activeTab === ViewMode.OVERVIEW_STATUS && !selectedDetailItemName && (
+                <div className="relative w-full md:w-64 self-start md:self-auto">
+                  <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                  <input 
+                    type="text" 
+                    placeholder="ค้นหาวัตถุดิบ..." 
+                    value={overviewSearchTerm}
+                    onChange={(e) => setOverviewSearchTerm(e.target.value)}
+                    className="w-full bg-white border border-gray-200 rounded-lg pl-9 pr-8 py-2 text-sm text-gray-750 shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all font-medium" 
+                  />
+                  {overviewSearchTerm && (
+                    <button 
+                      onClick={() => setOverviewSearchTerm('')}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 hover:text-red-500 transition-colors text-gray-400"
+                      title="ล้าง"
+                    >
+                      <X size={14} className="stroke-[2.5px]" />
+                    </button>
+                  )}
+                </div>
               )}
             </div>
 
