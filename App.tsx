@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, 
   PieChart, Pie, Cell, Rectangle, LineChart, Line, ReferenceLine, ComposedChart
@@ -3871,6 +3872,83 @@ const App: React.FC = () => {
           </div>
         </div>
       </main>
+
+      {/* Syncing Progress Overlay Popup */}
+      <AnimatePresence>
+        {syncProgress && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-gray-900/60 backdrop-blur-sm" id="sync-progress-overlay">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: 15 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 15 }}
+              transition={{ type: "spring", stiffness: 300, damping: 25 }}
+              className="w-full max-w-md bg-white rounded-2xl shadow-2xl border border-gray-100 p-6 flex flex-col items-center text-center overflow-hidden relative"
+              id="sync-progress-modal"
+            >
+              {/* Background elegant gradient top border line */}
+              <div className="absolute top-0 inset-x-0 h-1.5 bg-gradient-to-r from-indigo-500 via-purple-500 to-indigo-600" id="sync-top-accent" />
+              
+              {/* Animated Refresh Circle */}
+              <div className="h-16 w-16 bg-gradient-to-tr from-indigo-50 to-indigo-100/50 text-indigo-600 rounded-full flex items-center justify-center mb-4 relative shadow-inner" id="sync-loader-icon-container">
+                <RefreshCw size={26} className="animate-spin text-indigo-600 stroke-[2.2px]" id="sync-refresh-spinner" />
+                <span className="absolute -bottom-1 -right-1 bg-indigo-600 text-white text-[10.5px] px-2 py-0.5 rounded-full font-bold shadow-md border-2 border-white" id="sync-pct-badge">
+                  {syncProgress.total > 0 ? Math.round((syncProgress.current / syncProgress.total) * 100) : 0}%
+                </span>
+              </div>
+
+              <h3 className="text-lg font-bold text-gray-800 tracking-tight" id="sync-progress-headline">
+                กำลังปรับปรุงข้อมูลร้านค้าทั้งหมด
+              </h3>
+              <p className="text-sm text-gray-500 mt-1 font-medium" id="sync-progress-subline">
+                ประสานข้อมูลด่วน คลังสินค้า และยอดบัญชีรายวัน
+              </p>
+
+              {/* Real Progress Bar */}
+              <div className="w-full bg-gray-100 rounded-full h-3.5 mt-6 overflow-hidden relative border border-gray-100/80 p-0.5" id="sync-progress-parent">
+                <motion.div 
+                  className="h-full bg-gradient-to-r from-indigo-500 via-purple-500 to-indigo-600 rounded-full"
+                  initial={{ width: "0%" }}
+                  animate={{ width: `${syncProgress.total > 0 ? Math.round((syncProgress.current / syncProgress.total) * 100) : 0}%` }}
+                  transition={{ duration: 0.4, ease: "easeOut" }}
+                  id="sync-progressbar-indicator"
+                />
+              </div>
+
+              {/* Progress counter text */}
+              <div className="flex justify-between w-full mt-2.5 text-xs font-bold text-gray-400 font-mono" id="sync-meta-counters">
+                <span className="text-gray-400">สถานะการดึงไฟล์</span>
+                <span className="text-indigo-600 bg-indigo-50 px-2.5 py-0.5 rounded-md">
+                  {syncProgress.current} / {syncProgress.total} แผ่นงาน ({syncProgress.total > 0 ? Math.round((syncProgress.current / syncProgress.total) * 100) : 0}%)
+                </span>
+              </div>
+
+              {/* Adaptive Dynamic UX messaging with rich indicators */}
+              <div className="mt-5 text-xs text-gray-500 font-medium bg-gray-50 hover:bg-gray-100/70 transition-colors border border-gray-200/50 px-4 py-3 rounded-xl w-full text-left flex items-start gap-2.5" id="sync-dynamic-indicator-line">
+                <span className="text-sm shrink-0">
+                  {(() => {
+                    const pct = syncProgress.total > 0 ? Math.round((syncProgress.current / syncProgress.total) * 100) : 0;
+                    if (pct < 15) return "🔌";
+                    if (pct < 45) return "📥";
+                    if (pct < 75) return "🎯";
+                    if (pct < 95) return "⚙️";
+                    return "💾";
+                  })()}
+                </span>
+                <span className="text-gray-600 leading-relaxed">
+                  {(() => {
+                    const pct = syncProgress.total > 0 ? Math.round((syncProgress.current / syncProgress.total) * 100) : 0;
+                    if (pct < 15) return "เริ่มต้นการเชื่อมต่อ ไปยังฐานข้อมูลหลักและเตรียมพาร์สสเปรดชีตหลัก...";
+                    if (pct < 45) return "กำลังดาวน์โหลดไฟล์บัญชีรายจ่ายและประวัติต้นทุนวัตถุดิบรายสาขา...";
+                    if (pct < 75) return "กำลังวิเคราะห์เฉลี่ยรอบหมุนเวียน (Average Cycle) และแยกประเภทรายการบิล...";
+                    if (pct < 95) return "ทำการประมวลผลระบบพยากรณ์คลังสินค้าอัจฉริยะ (Order Predictor)...";
+                    return "กำลังบันทึกฐานข้อมูลลง Firestore Cloud สำเร็จ! ข้อมูลจะสัมพันธ์กันทุกอุปกรณ์ทันที...";
+                  })()}
+                </span>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 };
