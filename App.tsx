@@ -24,7 +24,11 @@ import {
   getInventoryFromFirebase,
   saveInventoryToFirebase,
   getUnitsFromFirebase,
-  saveUnitsToFirebase
+  saveUnitsToFirebase,
+  getTransactionsFromFirebase,
+  saveTransactionsToFirebase,
+  getCacheTimeFromFirebase,
+  saveCacheTimeToFirebase
 } from './services/firebaseService';
 import { StatsCard } from './components/StatsCard';
 import { TransactionsTable } from './components/TransactionsTable';
@@ -66,6 +70,7 @@ const App: React.FC = () => {
       return saved ? parseInt(saved, 10) : null;
   });
   const [isLoading, setIsLoading] = useState(false);
+  const [syncProgress, setSyncProgress] = useState<{current: number, total: number} | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isUsingRealData, setIsUsingRealData] = useState(() => {
       return localStorage.getItem('storeViz_transactions_cache') !== null;
@@ -171,6 +176,25 @@ const App: React.FC = () => {
   // -- CHANGED: Load from Firebase on Mount --
   useEffect(() => {
     const loadSettings = async () => {
+      // 0. Load Transactions Cache from Firebase FIRST for ultra-fast startup
+      let hasLoadedCache = false;
+      try {
+        const cachedTx = await getTransactionsFromFirebase();
+        const cachedTime = await getCacheTimeFromFirebase();
+        if (cachedTx && Array.isArray(cachedTx) && cachedTx.length > 0) {
+            setTransactions(cachedTx);
+            setIsUsingRealData(true);
+            hasLoadedCache = true;
+            if (cachedTime) {
+                setLastCacheTime(cachedTime);
+                localStorage.setItem('storeViz_cache_time', cachedTime.toString());
+            }
+            localStorage.setItem('storeViz_transactions_cache', JSON.stringify(cachedTx));
+        }
+      } catch (e) {
+        console.error("Failed to load cloud cache on startup", e);
+      }
+
       // 1. Load Sheets
       const remoteData = await getSheetUrlsFromFirebase();
       if (remoteData) {
@@ -178,7 +202,8 @@ const App: React.FC = () => {
         if (normalized.length > 0) {
             setSheets(normalized);
             setIsFirebaseConnected(true);
-            if (transactions.length === 0) {
+            const localCached = localStorage.getItem('storeViz_transactions_cache');
+            if (!hasLoadedCache && !localCached) {
                 loadData(normalized, false);
             }
         }
@@ -190,14 +215,16 @@ const App: React.FC = () => {
                 const parsed = JSON.parse(savedLocal);
                 const normalized = normalizeData(parsed);
                 setSheets(normalized);
-                if (transactions.length === 0) {
+                const localCached = localStorage.getItem('storeViz_transactions_cache');
+                if (!hasLoadedCache && !localCached) {
                     loadData(normalized, false);
                 }
             } catch(e) {}
         } else {
             // Initial Load with default
-            if (transactions.length === 0) {
-                loadData();
+            const localCached = localStorage.getItem('storeViz_transactions_cache');
+            if (!hasLoadedCache && !localCached) {
+                loadData(undefined, false);
             }
         }
       }
@@ -301,6 +328,27 @@ const App: React.FC = () => {
     setError(null);
     const sheetsToFetch = customSheets || sheets;
 
+    // --- OPTIMIZATION: Try to load from Cloud Cache if not manual refresh ---
+    if (!isManualRefresh) {
+        try {
+            const cachedTx = await getTransactionsFromFirebase();
+            const cachedTime = await getCacheTimeFromFirebase();
+            if (cachedTx && Array.isArray(cachedTx) && cachedTx.length > 0) {
+                setTransactions(cachedTx);
+                setIsUsingRealData(true);
+                if (cachedTime) {
+                    setLastCacheTime(cachedTime);
+                    localStorage.setItem('storeViz_cache_time', cachedTime.toString());
+                }
+                localStorage.setItem('storeViz_transactions_cache', JSON.stringify(cachedTx));
+                setIsLoading(false);
+                return;
+            }
+        } catch (e) {
+            console.warn("Failed to load cloud cache in loadData", e);
+        }
+    }
+
     try {
       // Filter out empty strings AND keep original index
       const validItems = sheetsToFetch
@@ -317,7 +365,9 @@ const App: React.FC = () => {
 
       // --- Batch Fetching to avoid 429 Too Many Requests ---
       const results: Transaction[][] = [];
-      const BATCH_SIZE = 2; // Fetch 2 sheets at a time (Even safer for 55+ sheets)
+      const BATCH_SIZE = 5; // Fetch 5 sheets at a time (Optimized sweet spot for high speed + rate-limits safety)
+
+      setSyncProgress({ current: 0, total: validItems.length });
 
       for (let i = 0; i < validItems.length; i += BATCH_SIZE) {
           const batch = validItems.slice(i, i + BATCH_SIZE);
@@ -329,9 +379,11 @@ const App: React.FC = () => {
           const batchResults = await Promise.all(batchPromises);
           results.push(...batchResults);
 
+          setSyncProgress({ current: Math.min(i + BATCH_SIZE, validItems.length), total: validItems.length });
+
           // Add delay if there are more items to fetch
           if (i + BATCH_SIZE < validItems.length) {
-              await new Promise(resolve => setTimeout(resolve, 1500)); // 1.5 second delay
+              await new Promise(resolve => setTimeout(resolve, 800)); // 0.8 second delay (highly responsive)
           }
       }
       
@@ -351,6 +403,10 @@ const App: React.FC = () => {
             const now = Date.now();
             localStorage.setItem('storeViz_cache_time', now.toString());
             setLastCacheTime(now);
+
+            // Save to Firebase Cloud Cache so all devices load instantly next time
+            saveTransactionsToFirebase(combinedData);
+            saveCacheTimeToFirebase(now);
         } catch(e) {
             console.warn("Storage limit exceeded, cache might be incomplete", e);
         }
@@ -373,6 +429,7 @@ const App: React.FC = () => {
       }
     } finally {
       setIsLoading(false);
+      setSyncProgress(null);
     }
   };
 
@@ -3590,7 +3647,11 @@ const App: React.FC = () => {
               className="flex-1 py-2.5 bg-gray-800 text-white rounded-lg hover:bg-gray-900 transition-colors flex items-center justify-center gap-2 disabled:opacity-50 shadow-sm font-medium"
             >
               <RefreshCw size={18} className={isLoading ? "animate-spin" : ""} />
-              {isLoading ? "กำลังประมวลผล..." : "รีเฟรชข้อมูลทั้งหมด (Sync All)"}
+              {isLoading 
+                ? (syncProgress 
+                    ? `กำลังดึงข้อมูล (${syncProgress.current}/${syncProgress.total} ชีท)...` 
+                    : "กำลังประมวลผล...") 
+                : "รีเฟรชข้อมูลทั้งหมด (Sync All)"}
             </button>
       </div>
 
@@ -3758,10 +3819,15 @@ const App: React.FC = () => {
               {activeTab !== ViewMode.IMPORT && activeTab !== ViewMode.INVENTORY && activeTab !== ViewMode.OVERVIEW_STATUS && (
                 <button 
                   onClick={handleSync}
-                  className="px-4 py-2 bg-white border border-gray-200 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors flex items-center gap-2 shadow-sm self-start md:self-auto"
+                  disabled={isLoading}
+                  className="px-4 py-2 bg-white border border-gray-200 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors flex items-center gap-2 shadow-sm self-start md:self-auto disabled:opacity-50"
                 >
                   <RefreshCw size={16} className={isLoading ? 'animate-spin' : ''} />
-                  รีเฟรชข้อมูล
+                  {isLoading 
+                    ? (syncProgress 
+                        ? `กำลังดึงข้อมูล (${syncProgress.current}/${syncProgress.total})...` 
+                        : "กำลังประมวลผล...") 
+                    : "รีเฟรชข้อมูล"}
                 </button>
               )}
               {activeTab === ViewMode.OVERVIEW_STATUS && !selectedDetailItemName && (

@@ -249,3 +249,77 @@ export const saveUnitsToFirebase = async (data: string[]): Promise<void> => {
       console.error("Error saving units to Firebase", error);
     }
 };
+
+// --- NEW: Transactions Cache Sync Functions ---
+const TRANSACTIONS_CACHE_KEY = 'store_viz_settings/transactions_cache';
+const CACHE_TIME_KEY = 'store_viz_settings/cache_time';
+
+export const getTransactionsFromFirebase = async (): Promise<any[] | null> => {
+    if (!app || !db) {
+        const success = initFirebase();
+        if (!success) return null;
+    }
+    if (!db) return null;
+  
+    try {
+      const dbRef = ref(db);
+      const snapshot = await get(child(dbRef, TRANSACTIONS_CACHE_KEY));
+      if (snapshot.exists()) {
+        return snapshot.val();
+      } else {
+        return null;
+      }
+    } catch (error) {
+      console.error("Error getting transactions cache from Firebase", error);
+      return null;
+    }
+};
+
+export const saveTransactionsToFirebase = async (data: any[]): Promise<void> => {
+    if (!app || !db) {
+        const success = initFirebase();
+        if (!success) return;
+    }
+    if (!db) return;
+  
+    try {
+      await set(ref(db, TRANSACTIONS_CACHE_KEY), data);
+    } catch (error) {
+      console.error("Error saving transactions cache to Firebase", error);
+    }
+};
+
+export const getCacheTimeFromFirebase = async (): Promise<number | null> => {
+    if (!app || !db) {
+        const success = initFirebase();
+        if (!success) return null;
+    }
+    if (!db) return null;
+  
+    try {
+      const dbRef = ref(db);
+      const snapshot = await get(child(dbRef, CACHE_TIME_KEY));
+      if (snapshot.exists()) {
+        return snapshot.val();
+      } else {
+        return null;
+      }
+    } catch (error) {
+      console.error("Error getting cache time from Firebase", error);
+      return null;
+    }
+};
+
+export const saveCacheTimeToFirebase = async (timestamp: number): Promise<void> => {
+    if (!app || !db) {
+        const success = initFirebase();
+        if (!success) return;
+    }
+    if (!db) return;
+  
+    try {
+      await set(ref(db, CACHE_TIME_KEY), timestamp);
+    } catch (error) {
+      console.error("Error saving cache time to Firebase", error);
+    }
+};
