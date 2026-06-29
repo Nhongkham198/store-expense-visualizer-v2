@@ -140,6 +140,10 @@ const App: React.FC = () => {
   const [passwordInput, setPasswordInput] = useState('');
   const [authError, setAuthError] = useState(false);
   
+  // Backup / Restore Modal State
+  const [backupModalData, setBackupModalData] = useState<string | null>(null);
+  const [copySuccess, setCopySuccess] = useState(false);
+  
   // Refs for scrolling logic
   const itemRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -863,15 +867,8 @@ const App: React.FC = () => {
 
   // --- NEW: Inventory Backup/Restore Logic ---
   const handleExportInventory = () => {
-    const dataStr = JSON.stringify(inventory, null, 2);
-    const blob = new Blob([dataStr], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `inventory-backup-${new Date().toISOString().slice(0, 10)}.json`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    const dataStr = JSON.stringify(inventory || [], null, 2);
+    setBackupModalData(dataStr);
   };
 
   const handleImportInventory = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -3149,17 +3146,17 @@ const App: React.FC = () => {
                     </button>
                     <button 
                         onClick={handleExportInventory} 
-                        className="text-xs flex items-center gap-1 text-gray-500 hover:text-indigo-600 border border-gray-200 px-3 py-2 rounded-md bg-white shadow-sm transition-colors whitespace-nowrap justify-center"
+                        className="text-xs flex items-center gap-1.5 text-gray-700 hover:text-indigo-600 border border-gray-300 hover:border-indigo-300 px-3.5 py-2 rounded-md bg-white hover:bg-indigo-50/30 shadow-sm transition-all whitespace-nowrap justify-center font-semibold cursor-pointer active:scale-95"
                         title="ดาวน์โหลดไฟล์สำรองข้อมูล (.json)"
                     >
-                        <Upload size={14} /> Backup
+                        <Upload size={14} className="text-gray-500 hover:text-indigo-600" /> Backup
                     </button>
                     <button 
                         onClick={() => inventoryFileInputRef.current?.click()} 
-                        className="text-xs flex items-center gap-1 text-gray-500 hover:text-indigo-600 border border-gray-200 px-3 py-2 rounded-md bg-white shadow-sm transition-colors whitespace-nowrap justify-center"
+                        className="text-xs flex items-center gap-1.5 text-gray-700 hover:text-indigo-600 border border-gray-300 hover:border-indigo-300 px-3.5 py-2 rounded-md bg-white hover:bg-indigo-50/30 shadow-sm transition-all whitespace-nowrap justify-center font-semibold cursor-pointer active:scale-95"
                         title="นำเข้าไฟล์สำรองข้อมูล"
                     >
-                        <Download size={14} /> Restore
+                        <Download size={14} className="text-gray-500 hover:text-indigo-600" /> Restore
                     </button>
                     <input 
                         type="file" 
@@ -3944,6 +3941,193 @@ const App: React.FC = () => {
                     return "กำลังบันทึกฐานข้อมูลลง Firestore Cloud สำเร็จ! ข้อมูลจะสัมพันธ์กันทุกอุปกรณ์ทันที...";
                   })()}
                 </span>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Backup Modal Overlay */}
+      <AnimatePresence>
+        {backupModalData && (
+          <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-gray-950/75 backdrop-blur-md" id="backup-modal-overlay">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              transition={{ type: "spring", stiffness: 320, damping: 26 }}
+              className="w-full max-w-lg bg-white rounded-2xl shadow-2xl border border-gray-100 flex flex-col overflow-hidden relative max-h-[90vh]"
+              id="backup-modal-card"
+            >
+              {/* Header Gradient Top Line */}
+              <div className="absolute top-0 inset-x-0 h-1.5 bg-gradient-to-r from-emerald-500 via-teal-500 to-indigo-600" id="backup-modal-top-accent" />
+              
+              {/* Header */}
+              <div className="p-5 border-b border-gray-100 flex justify-between items-start bg-gray-50/50" id="backup-modal-header">
+                <div className="flex gap-3">
+                  <div className="h-10 w-10 bg-emerald-50 text-emerald-600 rounded-lg flex items-center justify-center shadow-inner shrink-0" id="backup-modal-icon-container">
+                    <Database size={20} className="stroke-[2.2px]" />
+                  </div>
+                  <div>
+                    <h3 className="text-base font-bold text-gray-800" id="backup-modal-title">
+                      สำรองข้อมูลดิบ (Data Backup)
+                    </h3>
+                    <p className="text-xs text-gray-500 font-medium" id="backup-modal-subtitle">
+                      ดึงข้อมูลและคัดลอกไฟล์สำรองข้อมูลวัตถุดิบทั้งหมด
+                    </p>
+                  </div>
+                </div>
+                <button 
+                  onClick={() => {
+                    setBackupModalData(null);
+                    setCopySuccess(false);
+                  }} 
+                  className="p-1.5 hover:bg-gray-100 active:scale-95 transition-all rounded-full text-gray-400 hover:text-gray-600 cursor-pointer"
+                  id="backup-modal-close-btn"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              {/* Body */}
+              <div className="p-6 overflow-y-auto flex-1 flex flex-col gap-4" id="backup-modal-body">
+                {/* Meta details */}
+                <div className="bg-emerald-50/40 border border-emerald-100 p-3.5 rounded-xl flex items-center justify-between text-xs font-semibold text-emerald-800" id="backup-meta-box">
+                  <span className="flex items-center gap-1.5">
+                    <span className="h-2 w-2 bg-emerald-500 rounded-full animate-pulse" />
+                    จำนวนรายการวัตถุดิบทั้งหมด:
+                  </span>
+                  <span className="font-mono bg-emerald-100/60 px-2.5 py-0.5 rounded-full">
+                    {inventory?.length || 0} รายการ
+                  </span>
+                </div>
+
+                {/* Textarea representing JSON */}
+                <div className="flex flex-col gap-1.5" id="backup-textarea-section">
+                  <label className="text-xs font-bold text-gray-500 uppercase tracking-wider" id="backup-textarea-label">
+                    ชุดข้อมูลดิบสำรอง (.json Format)
+                  </label>
+                  <div className="relative group" id="backup-textarea-container">
+                    <textarea
+                      readOnly
+                      value={backupModalData}
+                      onClick={(e) => (e.target as HTMLTextAreaElement).select()}
+                      className="w-full h-44 p-4 font-mono text-[10.5px] leading-relaxed text-gray-600 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 resize-none shadow-inner scrollbar-thin"
+                      id="backup-raw-textarea"
+                    />
+                    <div className="absolute bottom-3 right-3 opacity-0 group-hover:opacity-100 transition-opacity text-[10px] text-gray-400 bg-gray-900/80 px-2 py-1 rounded font-medium" id="backup-hint">
+                      คลิกเพื่อเลือกทั้งหมด
+                    </div>
+                  </div>
+                </div>
+
+                {/* Controls */}
+                <div className="grid grid-cols-2 gap-3" id="backup-actions-grid">
+                  <button 
+                    onClick={() => {
+                      try {
+                        const blob = new Blob([backupModalData || ''], { type: 'application/json' });
+                        const url = URL.createObjectURL(blob);
+                        const link = document.createElement('a');
+                        link.href = url;
+                        link.download = `inventory-backup-${new Date().toISOString().slice(0, 10)}.json`;
+                        link.target = '_blank';
+                        document.body.appendChild(link);
+                        link.click();
+                        document.body.removeChild(link);
+                        URL.revokeObjectURL(url);
+
+                        // Trigger visual alert feedback to help users inside iframe sandboxes
+                        alert(
+                          "📤 ระบบได้ทำการส่งคำสั่งดาวน์โหลดไฟล์สำรองแล้ว!\n\n" +
+                          "⚠️ หากไม่มีไฟล์ดาวน์โหลดปรากฏขึ้น:\n" +
+                          "เนื่องจากระบบจำลอง (Live Preview iFrame Sandbox) ของทาง Google AI Studio บล็อกระบบความปลอดภัยการดาวน์โหลดไฟล์โดยตรง\n\n" +
+                          "คุณสามารถทำตามคำแนะนำได้ 2 วิธีง่ายๆ ดังนี้ครับ:\n" +
+                          "1) คลิกปุ่ม \"คัดลอกข้อมูลดิบ (Copy)\" สีขาวด้านขวา แล้วนำไปวาง (Paste) บันทึกใน Notepad\n" +
+                          "2) หรือกดปุ่ม 'เปิดในแท็บใหม่' (ลูกศรขวาบนของหน้าจอพรีวิว) เพื่อรันแอปนอกกรอบ iFrame แล้วจะสามารถกดดาวน์โหลดไฟล์ได้โดยตรง 100% เลยครับ!"
+                        );
+                      } catch (err) {
+                        console.error("Programmatic download failed", err);
+                        alert(
+                          "⚠️ เกิดข้อผิดพลาดในการดาวน์โหลดเนื่องจากความปลอดภัยของเบราว์เซอร์\n\n" +
+                          "กรุณาใช้ปุ่ม \"คัดลอกข้อมูลดิบ (Copy)\" ด้านขวา เพื่อนำข้อมูลสำรองไปบันทึกด้วยตัวเองในโปรแกรม Notepad แทนชั่วคราวครับ!"
+                        );
+                      }
+                    }}
+                    className="flex items-center justify-center gap-2 py-3 bg-emerald-600 text-white rounded-xl font-bold text-sm hover:bg-emerald-700 active:scale-[0.98] transition-all shadow-md shadow-emerald-600/10 cursor-pointer"
+                    id="backup-dl-btn"
+                  >
+                    <Download size={16} />
+                    ดาวน์โหลดไฟล์ดิบ (.json)
+                  </button>
+
+                  <button 
+                    onClick={() => {
+                      try {
+                        if (navigator.clipboard && navigator.clipboard.writeText) {
+                          navigator.clipboard.writeText(backupModalData || '');
+                          setCopySuccess(true);
+                          setTimeout(() => setCopySuccess(false), 2000);
+                          return;
+                        }
+                      } catch (e) {
+                        console.warn("navigator.clipboard failed, trying fallback", e);
+                      }
+
+                      try {
+                        const textarea = document.createElement('textarea');
+                        textarea.value = backupModalData || '';
+                        textarea.style.position = 'fixed';
+                        textarea.style.opacity = '0';
+                        document.body.appendChild(textarea);
+                        textarea.select();
+                        const successful = document.execCommand('copy');
+                        document.body.removeChild(textarea);
+                        if (successful) {
+                          setCopySuccess(true);
+                          setTimeout(() => setCopySuccess(false), 2000);
+                        }
+                      } catch (err) {
+                        console.error("Fallback copy failed", err);
+                      }
+                    }}
+                    className={`flex items-center justify-center gap-2 py-3 border font-bold text-sm rounded-xl active:scale-[0.98] transition-all cursor-pointer ${
+                      copySuccess 
+                        ? 'bg-indigo-50 border-indigo-200 text-indigo-700 font-semibold' 
+                        : 'bg-white border-gray-300 text-gray-700 hover:bg-gray-50 hover:border-gray-400'
+                    }`}
+                    id="backup-copy-btn"
+                  >
+                    {copySuccess ? <Check size={16} className="text-indigo-600 stroke-[2.5px]" /> : <Upload size={16} className="rotate-180" />}
+                    {copySuccess ? 'คัดลอกลงคลิปบอร์ดสำเร็จ!' : 'คัดลอกข้อมูลดิบ (Copy)'}
+                  </button>
+                </div>
+
+                {/* Informative Note */}
+                <div className="bg-amber-50/50 border border-amber-100 p-4 rounded-xl text-xs text-amber-800 leading-relaxed shrink-0 flex gap-2.5 items-start" id="backup-warning-box">
+                  <span className="text-sm shrink-0">💡</span>
+                  <div>
+                    <span className="font-bold">คำแนะนำสำหรับโหมดหน้าต่างพรีวิว (Sandbox Frame):</span>
+                    <p className="mt-1 text-gray-600 font-medium">
+                      เนื่องจากเบราว์เซอร์บางรุ่นอาจบล็อกการดาวน์โหลดไฟล์โดยตรงจากหน้าจอพรีวิว 
+                      คุณสามารถกดปุ่ม <span className="font-bold text-indigo-600">"คัดลอกข้อมูลดิบ (Copy)"</span> เพื่อเอาข้อมูลไปวาง (Paste) ในโปรแกรม Notepad และบันทึกเป็นชื่อไฟล์ <code className="bg-gray-100 px-1 py-0.5 rounded font-mono font-bold text-red-600">backup.json</code> ได้เลยทันที หรือกดปุ่มเปิดแอปพลิเคชันแยกแท็บเพื่อดาวน์โหลดได้โดยตรงครับ!
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Footer */}
+              <div className="px-6 py-4 bg-gray-50 border-t border-gray-100 flex justify-end" id="backup-modal-footer">
+                <button 
+                  onClick={() => {
+                    setBackupModalData(null);
+                    setCopySuccess(false);
+                  }}
+                  className="px-5 py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 text-xs font-bold rounded-lg transition-colors cursor-pointer active:scale-95"
+                  id="backup-modal-close-footer-btn"
+                >
+                  ปิดหน้าต่าง
+                </button>
               </div>
             </motion.div>
           </div>
